@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Ignore wav2vec2 model files
+wav2vec_*
+
 # C extensions
 *.so
 

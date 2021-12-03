@@ -24,9 +24,9 @@ from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.data.data_utils import compute_mask_indices
 from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
-from ConvFeatureExtractionModel import ConvFeatureExtractionModelConfig, ConvFeatureExtractionModel
-from TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayerConfig, TransformerSentenceEncoderLayer
-from TransformerEncoder import TransformerEncoderConfig, TransformerEncoder
+from .ConvFeatureExtractionModel import ConvFeatureExtractionModelConfig, ConvFeatureExtractionModel
+from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayerConfig, TransformerSentenceEncoderLayer
+from .TransformerEncoder import TransformerEncoderConfig, TransformerEncoder
 
 MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poisson"])
 

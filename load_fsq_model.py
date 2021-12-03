@@ -4,14 +4,13 @@ from fairseq.data import Dictionary
 from fairseq.checkpoint_utils import load_checkpoint_to_cpu
 from fairseq.tasks.audio_pretraining import AudioPretrainingTask
 from fairseq.tasks.audio_finetuning import AudioFinetuningTask
-from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
+# from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
+from modules import Wav2Vec2Model
 from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
-# from custom_w2v2 import Wav2Vec2Model
-# from w2v2config import Wav2Vec2Config
+
 from fairseq import models, quantization_utils
 
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
-from fairseq import tasks
 
 def load_model(filename, arg_overrides: Optional[Dict[str, Any]] = None):
 
@@ -22,10 +21,6 @@ def load_model(filename, arg_overrides: Optional[Dict[str, Any]] = None):
     elif "cfg" in state and state["cfg"] is not None:
         cfg = state["cfg"]
     
-    # task = AudioPretrainingTask.setup_task(cfg.task)
-    # task = AudioFinetuningTask.setup_task(cfg.task)
-    
-    # model = task.build_model(cfg.model)
     model_cfg = cfg.model
     model_type = getattr(model_cfg, "_name", None) # or getattr(cfg, "arch", None)
     
