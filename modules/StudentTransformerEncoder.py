@@ -276,12 +276,15 @@ class StudentTransformerEncoder(nn.Module):
         time_length += how_many_pad
 
         result = torch.tensor([]).cuda()
-        
-        j = 0
-        while (j < self.tr_fcl_output_factor):
-            # (T / factor) X B x (C * factor)
-            tensor_to_concat = x[j::self.tr_fcl_output_factor,:,:]
-            result = torch.cat([result, tensor_to_concat], dim = 2)
-            j += 1
-        # (T / factor) X B X (C * factor)
+        for i in range (time_length // self.tr_fcl_output_factor):
+            j = 0
+            tensor_to_concat = torch.tensor([]).cuda()
+            while (j < self.tr_fcl_output_factor):
+                # B x (C * factor)
+                tensor_to_concat = torch.cat((tensor_to_concat,
+                                              x[self.tr_fcl_output_factor * i + j, :, :]), dim = 1)
+                j += 1
+            tensor_to_concat = tensor_to_concat.unsqueeze(0)
+            result = torch.cat([result, tensor_to_concat], dim = 0)
+
         return result         
