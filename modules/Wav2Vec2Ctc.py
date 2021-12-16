@@ -28,7 +28,7 @@ from fairseq.modules import (
     TransformerDecoderLayer,
 )
 
-from Wav2VecEncoder import Wav2Vec2AsrConfig, Wav2VecEncoder
+from .Wav2VecEncoder import Wav2Vec2AsrConfig, Wav2VecEncoder
 
 @dataclass
 class Wav2Vec2CtcConfig(Wav2Vec2AsrConfig):

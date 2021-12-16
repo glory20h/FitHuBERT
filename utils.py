@@ -1,9 +1,35 @@
 import numpy as np
 import torch
+import torch.nn as nn
 
 from itertools import groupby
 from typing import Any, Dict, List
+
 from torch.nn.utils.rnn import pad_sequence
+
+from modules.CustomWav2Vec2 import CustomWav2Vec2Model
+from modules.utils_for_asr import Linear
+
+# Alternative for Wav2VecEncoder
+class CustomStudentModel(nn.Module):
+    def __init__(self, config):
+        super(CustomStudentModel, self).__init__()
+        self.student_model = CustomWav2Vec2Model(config)
+        self.final_dropout = nn.Dropout(config.final_dropout)
+        self.proj = Linear(config.encoder_setting.layer_setting.encoder_embed_dim, config.targ_d)
+        
+    def forward(self, src, padding_mask=None, layer=100):
+        result = self.student_model.extract_features(source=src, padding_mask=padding_mask, layer=layer)
+        x = result['x'].transpose(0, 1)
+        x = self.final_dropout(x)
+        x = self.proj(x)
+        
+        return {
+            "encoder_out": x,  # T x B x C
+            "padding_mask": result["padding_mask"],  # B x T,
+            "layer_results": result["layer_results"],
+            "tr_layer_results": result["tr_layer_results"],
+        }
 
 class DataCollatorWithPadding:
     def __call__(self, features: List[Dict[str, Any]]):
@@ -30,5 +56,15 @@ class Decoder:
     def decode(self, ids):
         converted_tokens = self.look_up[ids]
         fused_tokens = [tok[0] for tok in groupby(converted_tokens)]
-        output = ' '.join(''.join(''.join(fused_tokens).split("<s>")).split("|"))
+        output = ' '.join(''.join(''.join(fused_tokens).split("<s>")).split("|")).rstrip()
         return output
+    
+class CTCSequenceConverter:
+    def __init__(self, return_type="pt"):
+        self.return_type = return_type
+        
+    def __call__(self, ids):
+        if self.return_type == "pt":
+            return torch.tensor([tok[0] for tok in groupby(ids) if tok[0] != 0])
+        
+        return [tok[0] for tok in groupby(ids) if tok[0] != 0]

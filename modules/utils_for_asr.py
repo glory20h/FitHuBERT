@@ -28,7 +28,7 @@ from fairseq.modules import (
     TransformerDecoderLayer,
 )
 
-from Wav2Vec2Model import Wav2Vec2Config, Wav2Vec2Model
+from .Wav2Vec2Model import Wav2Vec2Config, Wav2Vec2Model
 
 def Embedding(num_embeddings, embedding_dim, padding_idx):
     m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)

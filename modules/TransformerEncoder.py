@@ -98,6 +98,8 @@ class TransformerEncoder(nn.Module):
 
         if self.layer_norm_first and layer is None:
             x = self.layer_norm(x)
+        elif self.layer_norm_first and layer >= len(self.layers):
+            x = self.layer_norm(x)
 
         return x, layer_results
 

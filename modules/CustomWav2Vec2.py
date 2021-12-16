@@ -26,21 +26,21 @@ from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
 from .ConvFeatureExtractionModel import ConvFeatureExtractionModelConfig, ConvFeatureExtractionModel
 from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayerConfig, TransformerSentenceEncoderLayer
-# Changed TransformerEncoder -> CustomTransformerEncoder
-from .CustomTransformerEncoder import TransformerEncoderConfig, TransformerEncoder
+
+from .StudentTransformerEncoder import StudentTransformerEncoderConfig, StudentTransformerEncoder
 
 MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poisson"])
 
 @dataclass
-class Wav2Vec2Config(FairseqDataclass):
+class CustomWav2Vec2Config(FairseqDataclass):
     
     conv_layer_setting: ConvFeatureExtractionModelConfig = field(
         default=ConvFeatureExtractionModelConfig(),
         metadata={"help": "Default setting of ConvFeatureExtractionModelConfig"}
     )
     
-    encoder_setting: TransformerEncoderConfig = field(
-        default=TransformerEncoderConfig(),
+    encoder_setting: StudentTransformerEncoderConfig = field(
+        default=StudentTransformerEncoderConfig(),
         metadata={"help": "Default setting of TransformerEncoderConfig"}
     )
     
@@ -180,8 +180,8 @@ class Wav2Vec2Config(FairseqDataclass):
         },     
     )
 
-class Wav2Vec2Model(BaseFairseqModel):
-    def __init__(self, cfg: Wav2Vec2Config):
+class CustomWav2Vec2Model(BaseFairseqModel):
+    def __init__(self, cfg: CustomWav2Vec2Config):
         super().__init__()
         self.cfg = cfg
         
@@ -284,7 +284,7 @@ class Wav2Vec2Model(BaseFairseqModel):
             torch.FloatTensor(transformer_encoder_layer_cfg.encoder_embed_dim).uniform_()
             )
 
-        self.encoder = TransformerEncoder(transformer_encoder_cfg) 
+        self.encoder = StudentTransformerEncoder(transformer_encoder_cfg) 
         self.layer_norm = LayerNorm(self.feature_extractor_output_embed)
 
         self.target_glu = None
@@ -302,7 +302,7 @@ class Wav2Vec2Model(BaseFairseqModel):
         return state_dict
 
     @classmethod
-    def build_model(cls, cfg: Wav2Vec2Config, task=None):
+    def build_model(cls, cfg: CustomWav2Vec2Config, task=None):
         """Build a new model instance."""
 
         return cls(cfg)
@@ -560,7 +560,7 @@ class Wav2Vec2Model(BaseFairseqModel):
             y = unmasked_features
             mask_indices = None
 
-        x, layer_results = self.encoder(x, padding_mask=padding_mask, layer=layer)
+        x, layer_results, tr_layer_results = self.encoder(x, padding_mask=padding_mask, layer=layer)
 
         if features_only:
             return {
@@ -568,6 +568,7 @@ class Wav2Vec2Model(BaseFairseqModel):
                 "padding_mask": padding_mask,
                 "features": unmasked_features,
                 "layer_results": layer_results,
+                "tr_layer_results": tr_layer_results,
             }
 
         if self.quantizer:

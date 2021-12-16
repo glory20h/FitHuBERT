@@ -21,7 +21,7 @@ from fairseq.modules import (
 
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
-from TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
+from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
 
 @dataclass
 class StudentTransformerEncoderConfig(FairseqDataclass):
@@ -177,12 +177,14 @@ class StudentTransformerEncoder(nn.Module):
         self.apply(init_bert_params)
 
     def forward(self, x, padding_mask=None, layer=None):
-        x, layer_results = self.extract_features(x, padding_mask, layer)
+        x, layer_results, tr_layer_results = self.extract_features(x, padding_mask, layer)
 
         if self.layer_norm_first and layer is None:
             x = self.layer_norm(x)
+        elif self.layer_norm_first and layer >= len(self.layers):
+            x = self.layer_norm(x)
 
-        return x, layer_results
+        return x, layer_results, tr_layer_results
 
     def extract_features(self, x, padding_mask=None, tgt_layer=None):
 
@@ -202,6 +204,7 @@ class StudentTransformerEncoder(nn.Module):
         x = x.transpose(0, 1)
 
         layer_results = []
+        tr_layer_results = []
         r = None
         
         if self.tr_layer is None:
@@ -239,6 +242,7 @@ class StudentTransformerEncoder(nn.Module):
                             # T x B x C
                             x = self.concat_channelwise(x)
                             x = layer(x)
+                        tr_layer_results.append(x)
                 # TransformerEncoder
                 elif i == 2:
                     for j, layer in enumerate(layer_block):
@@ -256,7 +260,7 @@ class StudentTransformerEncoder(nn.Module):
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
-        return x, layer_results    
+        return x, layer_results, tr_layer_results
     
     def max_positions(self):
         """Maximum output length supported by the encoder."""
@@ -271,14 +275,17 @@ class StudentTransformerEncoder(nn.Module):
         time_length, batch, channel = x.size()
         how_many_pad = self.tr_fcl_output_factor - time_length % self.tr_fcl_output_factor 
         if how_many_pad != 0:
-            zero_pad = torch.zeros([how_many_pad, batch, channel]).cuda()
+            # zero_pad = torch.zeros([how_many_pad, batch, channel]).cuda()
+            zero_pad = torch.zeros([how_many_pad, batch, channel])
             x = torch.cat([x, zero_pad], dim = 0)
         time_length += how_many_pad
 
-        result = torch.tensor([]).cuda()
+        # result = torch.tensor([]).cuda()
+        result = torch.tensor([])
         for i in range (time_length // self.tr_fcl_output_factor):
             j = 0
-            tensor_to_concat = torch.tensor([]).cuda()
+            # tensor_to_concat = torch.tensor([]).cuda()
+            tensor_to_concat = torch.tensor([])
             while (j < self.tr_fcl_output_factor):
                 # B x (C * factor)
                 tensor_to_concat = torch.cat((tensor_to_concat,

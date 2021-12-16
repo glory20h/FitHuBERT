@@ -28,8 +28,8 @@ from fairseq.modules import (
     TransformerDecoderLayer,
 )
 
-from Wav2Vec2Model import Wav2Vec2Config, Wav2Vec2Model
-from utils_for_asr import Embedding, Linear, convert_to_custom_config
+from .Wav2Vec2Model import Wav2Vec2Config, Wav2Vec2Model
+from .utils_for_asr import Embedding, Linear, convert_to_custom_config
 
 @dataclass
 class Wav2Vec2AsrConfig(FairseqDataclass):
