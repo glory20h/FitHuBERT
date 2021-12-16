@@ -21,7 +21,7 @@ from fairseq.modules import (
 
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
-from TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
+from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
 
 @dataclass
 class StudentTransformerEncoderConfig(FairseqDataclass):
@@ -44,7 +44,7 @@ class StudentTransformerEncoderConfig(FairseqDataclass):
     )
     '''
     encoder_layers: int = field(
-        default=12,
+        default=6,
         metadata={"help": "num encoder layers in the transformer"}
     )
     
@@ -85,7 +85,7 @@ class StudentTransformerEncoderConfig(FairseqDataclass):
     )
     
     tr_layer_floor: int = field(
-        default=6,
+        default=3,
         metadata={"help": "which floor should time reduction layer put in"}
     )
 
