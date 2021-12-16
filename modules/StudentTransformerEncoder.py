@@ -21,7 +21,7 @@ from fairseq.modules import (
 
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 
-from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
+from TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
 
 @dataclass
 class StudentTransformerEncoderConfig(FairseqDataclass):
@@ -44,7 +44,7 @@ class StudentTransformerEncoderConfig(FairseqDataclass):
     )
     '''
     encoder_layers: int = field(
-        default=6,
+        default=12,
         metadata={"help": "num encoder layers in the transformer"}
     )
     
@@ -85,7 +85,7 @@ class StudentTransformerEncoderConfig(FairseqDataclass):
     )
     
     tr_layer_floor: int = field(
-        default=3,
+        default=6,
         metadata={"help": "which floor should time reduction layer put in"}
     )
 
@@ -276,15 +276,12 @@ class StudentTransformerEncoder(nn.Module):
         time_length += how_many_pad
 
         result = torch.tensor([]).cuda()
-        for i in range (time_length // self.tr_fcl_output_factor):
-            j = 0
-            tensor_to_concat = torch.tensor([]).cuda()
-            while (j < self.tr_fcl_output_factor):
-                # B x (C * factor)
-                tensor_to_concat = torch.cat((tensor_to_concat,
-                                              x[self.tr_fcl_output_factor * i + j, :, :]), dim = 1)
-                j += 1
-            tensor_to_concat = tensor_to_concat.unsqueeze(0)
-            result = torch.cat([result, tensor_to_concat], dim = 0)
-
-        return result         
+        
+        j = 0
+        while (j < self.tr_fcl_output_factor):
+            # (T / factor) X B x (C * factor)
+            tensor_to_concat = x[j::self.tr_fcl_output_factor,:,:]
+            result = torch.cat([result, tensor_to_concat], dim = 2)
+            j += 1
+        # (T / factor) X B X (C * factor)
+        return result
