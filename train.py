@@ -172,12 +172,6 @@ class W2V2Distil(LightningModule):
                 "monitor": "v_loss",
             },
         }
-    
-    def prepare_data(self):
-        # download
-        torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True)
-        torchaudio.datasets.LIBRISPEECH(DATA_PATH, "dev-clean", download=True)
-        torchaudio.datasets.LIBRISPEECH(DATA_PATH, "test-clean", download=True)
 
     def setup(self, stage=None):
         if stage == "fit" or stage is None:
