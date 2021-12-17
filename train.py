@@ -12,6 +12,8 @@ from load_fsq_model import load_model
 from modules.CustomWav2Vec2 import CustomWav2Vec2Config
 from utils import *
 
+from importlib import reload
+
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -19,15 +21,17 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # CONFIG ------------------------------
 TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
 DATA_PATH = '../'
+STUDENT_ENCODER_LAYERS = 6
+TR_LAYER_FLOOR = 3
+TR_TYPE = "conv1d"
 NUM_EPOCHS = 100
 GPUS = 2
 BATCH_SIZE = 2
 LEARNING_RATE = 1e-4
 ACCUMULATE_GRAD_BATCHES = 1
 OUTPUT_DIR = './results/'
-CHECKPOINT = 'checkpoint-epoch=01.ckpt'
 # CHECKPOINT = 'last.ckpt'
-# CHECKPOINT = None
+CHECKPOINT = None
 TEST = False
 # --------------------------------------
 
@@ -70,9 +74,9 @@ class W2V2Distil(LightningModule):
         self.student_config.encoder_setting.layer_setting.encoder_attention_heads = 16
         self.student_config.encoder_setting.layer_setting.dropout = 0.0
         self.student_config.encoder_setting.layer_setting.layer_norm_first=True
-        self.student_config.encoder_setting.type_of_tr_layer = "conv1d"
-        self.student_config.encoder_setting.encoder_layers = 6
-        self.student_config.encoder_setting.tr_layer_floor = 3
+        self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
+        self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
+        self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
         self.student_config.encoder_setting.dropout_input = 0.1
         self.student_config.encoder_setting.dropout_features = 0.1
         self.student_config.encoder_setting.final_dim = 768
@@ -86,6 +90,10 @@ class W2V2Distil(LightningModule):
         self.train_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True) # -> Must use all 960h later
         self.eval_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "dev-clean", download=True)
         self.test_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "test-clean", download=True)
+
+        # For better pytorch lightning logging
+        logging.shutdown()
+        reload(logging)
 
     def forward(self, batch):
         # Input batch into teacher_model
@@ -138,7 +146,10 @@ class W2V2Distil(LightningModule):
         target_lengths = torch.tensor([len(tokens) for tokens in fused_tokens]) # -> Revise this
         
         # Calculate loss with results
-        loss1 = self.L1loss(student_results['layer_results'][2][0], teacher_results['layer_results'][11][0])
+        loss1 = self.L1loss(
+                student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
+                teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
+            )
         loss2 = self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out)
         loss3 = self.CTCloss(
                 ctc_input, 
@@ -166,9 +177,9 @@ class W2V2Distil(LightningModule):
         wer = self.wer_metric.compute(predictions=predictions, references=batch['labels'])
         cer = self.cer_metric.compute(predictions=predictions, references=batch['labels'])
 
-        self.log("v_loss", loss, on_epoch=True, prog_bar=True)
-        self.log("wer", wer, on_epoch=True, prog_bar=True)
-        self.log("cer", cer, on_epoch=True, prog_bar=True)
+        self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
+        self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
+        self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
         
         return {"v_loss": loss, "wer": wer, "cer": cer}
     
@@ -181,9 +192,9 @@ class W2V2Distil(LightningModule):
         wer = self.wer_metric.compute(predictions=predictions, references=batch['labels'])
         cer = self.cer_metric.compute(predictions=predictions, references=batch['labels'])
 
-        self.log("test_loss", loss, on_epoch=True, prog_bar=True)
-        self.log("wer", wer, on_epoch=True, prog_bar=True)
-        self.log("cer", cer, on_epoch=True, prog_bar=True)
+        self.log("test_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
+        self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
+        self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
         
         return {"test_loss": loss, "wer": wer, "cer": cer}
         
