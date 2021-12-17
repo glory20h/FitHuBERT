@@ -22,11 +22,12 @@ DATA_PATH = '../'
 NUM_EPOCHS = 100
 GPUS = 2
 BATCH_SIZE = 2
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 1e-4
 ACCUMULATE_GRAD_BATCHES = 1
 OUTPUT_DIR = './results/'
+CHECKPOINT = 'checkpoint-epoch=01.ckpt'
 # CHECKPOINT = 'last.ckpt'
-CHECKPOINT = None
+# CHECKPOINT = None
 TEST = False
 # --------------------------------------
 
@@ -46,8 +47,9 @@ class W2V2Distil(LightningModule):
         self.cer_metric = load_metric("cer")
         
         self.L1loss = nn.L1Loss()
-        self.CTCloss = nn.CTCLoss(blank=4, zero_infinity=True)
+        self.CTCloss = nn.CTCLoss(blank=4, zero_infinity=False) # -> Exp zero_infinity
         
+        self.decoder = Decoder()
         self.ctc_converter = CTCSequenceConverter(return_type="pt")
 
         self.teacher_model = load_model(TEACHER_MODEL)
@@ -129,7 +131,7 @@ class W2V2Distil(LightningModule):
         
         # Process output for CTC loss
         ctc_input = student_results['encoder_out'].log_softmax(2) # -> Revise this
-        logits = teacher_results['encoder_out'].transpose(0,1)
+        logits = teacher_results['encoder_out'].transpose(0,1) # T x B x C -> B x T x C
         predicted_ids = torch.argmax(logits, dim=-1)
         fused_tokens = [self.ctc_converter(ids) for ids in predicted_ids]
         target = torch.cat(fused_tokens)
@@ -158,9 +160,33 @@ class W2V2Distil(LightningModule):
     def validation_step(self, batch, batch_idx):
         results, loss = self(batch)
 
+        predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
+        predictions = [self.decoder.decode(ids) for ids in predicted_ids]
+
+        wer = self.wer_metric.compute(predictions=predictions, references=batch['labels'])
+        cer = self.cer_metric.compute(predictions=predictions, references=batch['labels'])
+
         self.log("v_loss", loss, on_epoch=True, prog_bar=True)
+        self.log("wer", wer, on_epoch=True, prog_bar=True)
+        self.log("cer", cer, on_epoch=True, prog_bar=True)
         
-        return {"v_loss": loss}
+        return {"v_loss": loss, "wer": wer, "cer": cer}
+    
+    def test_step(self, batch, batch_idx):
+        results, loss = self(batch)
+
+        predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
+        predictions = [self.decoder.decode(ids) for ids in predicted_ids]
+
+        wer = self.wer_metric.compute(predictions=predictions, references=batch['labels'])
+        cer = self.cer_metric.compute(predictions=predictions, references=batch['labels'])
+
+        self.log("test_loss", loss, on_epoch=True, prog_bar=True)
+        self.log("wer", wer, on_epoch=True, prog_bar=True)
+        self.log("cer", cer, on_epoch=True, prog_bar=True)
+        
+        return {"test_loss": loss, "wer": wer, "cer": cer}
+        
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
