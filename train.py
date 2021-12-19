@@ -1,4 +1,3 @@
-# glory20h
 import os
 import re
 import logging
