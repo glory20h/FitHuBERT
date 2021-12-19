@@ -1,3 +1,4 @@
+# glory20h
 import os
 import re
 import logging
@@ -13,6 +14,8 @@ from modules.CustomWav2Vec2 import CustomWav2Vec2Config
 from utils import *
 
 from importlib import reload
+logging.shutdown()
+reload(logging)
 
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -21,12 +24,17 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # CONFIG ------------------------------
 TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
 DATA_PATH = '../'
-STUDENT_ENCODER_LAYERS = 6
-TR_LAYER_FLOOR = 3
+DATA_AMOUNT = "100h"
+# DATA_AMOUNT = "460h"
+# DATA_AMOUNT = "960h"
+COPY_PARAMETERS = True
+USE_GT_FOR_CTC = True
+STUDENT_ENCODER_LAYERS = 2
+TR_LAYER_FLOOR = 1
 TR_TYPE = "conv1d"
 NUM_EPOCHS = 100
 GPUS = 2
-BATCH_SIZE = 2
+BATCH_SIZE = 3
 LEARNING_RATE = 1e-4
 ACCUMULATE_GRAD_BATCHES = 1
 OUTPUT_DIR = './results/'
@@ -37,8 +45,7 @@ TEST = False
 
 class W2V2Distil(LightningModule):
     def __init__(self, 
-                data_path=DATA_PATH, 
-                learning_rate=LEARNING_RATE,
+                data_path=DATA_PATH,
                 batch_size=BATCH_SIZE,
                 ):
         super().__init__()
@@ -51,10 +58,16 @@ class W2V2Distil(LightningModule):
         self.cer_metric = load_metric("cer")
         
         self.L1loss = nn.L1Loss()
-        self.CTCloss = nn.CTCLoss(blank=4, zero_infinity=False) # -> Exp zero_infinity
+        self.CTCloss = nn.CTCLoss(blank=0, zero_infinity=True)
         
         self.decoder = Decoder()
         self.ctc_converter = CTCSequenceConverter(return_type="pt")
+
+        self.char_dict = {"<s>": 0, "<pad>": 1, "</s>": 2, "<unk>": 3, " ": 4, "E": 5, 
+            "T": 6, "A": 7, "O": 8, "N": 9, "I": 10, "H": 11, "S": 12, 
+            "R": 13, "D": 14, "L": 15, "U": 16, "M": 17, "W": 18, "C": 19, 
+            "F": 20, "G": 21, "Y": 22, "P": 23, "B": 24, "V": 25, "K": 26, 
+            "'": 27, "X": 28, "J": 29, "Q": 30, "Z": 31}
 
         self.teacher_model = load_model(TEACHER_MODEL)
         # Freeze teacher model
@@ -68,7 +81,7 @@ class W2V2Distil(LightningModule):
 
         # Update student model config as required
         self.student_config.conv_layer_setting.extractor_mode = "layer_norm"
-        self.student_config.conv_bias = True
+        self.student_config.conv_layer_setting.conv_bias = True
         self.student_config.encoder_setting.layer_setting.encoder_embed_dim = 1024
         self.student_config.encoder_setting.layer_setting.encoder_ffn_embed_dim = 4096
         self.student_config.encoder_setting.layer_setting.encoder_attention_heads = 16
@@ -86,8 +99,22 @@ class W2V2Distil(LightningModule):
 
         self.student_model = CustomStudentModel(self.student_config)
 
+        # Copy model parameters of teacher model (conv feature extractor & first transformer layer)
+        if COPY_PARAMETERS:
+            self.student_model.student_model.feature_extractor.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.feature_extractor.state_dict())
+            self.student_model.student_model.post_extract_proj.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.post_extract_proj.state_dict())
+            self.student_model.student_model.encoder.pos_conv.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.pos_conv.state_dict())
+            self.student_model.student_model.encoder.layers[0][0].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[0].state_dict())
+
         # download
-        self.train_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True) # -> Must use all 960h later
+        self.train_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True)
+        if DATA_AMOUNT == "960h":
+            train_data_360 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-360", download=True)
+            train_data_500 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-other-500", download=True)
+            self.train_data = torch.utils.data.ConcatDataset([self.train_data, train_data_360, train_data_500])
+        elif DATA_AMOUNT == "460h":
+            train_data_360 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-360", download=True)
+            self.train_data = torch.utils.data.ConcatDataset([self.train_data, train_data_360])
         self.eval_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "dev-clean", download=True)
         self.test_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "test-clean", download=True)
 
@@ -120,7 +147,6 @@ class W2V2Distil(LightningModule):
         #     "layer_results": result["layer_results"],
         #     "tr_layer_results": result["tr_layer_results"],
         # }
-
         
         # Input intermediate result of student model into upper transformer layers of teacher model
         x = student_results['tr_layer_results'][0].detach()
@@ -138,12 +164,19 @@ class W2V2Distil(LightningModule):
         ### MUST REVISE ###
         
         # Process output for CTC loss
-        ctc_input = student_results['encoder_out'].log_softmax(2) # -> Revise this
-        logits = teacher_results['encoder_out'].transpose(0,1) # T x B x C -> B x T x C
-        predicted_ids = torch.argmax(logits, dim=-1)
-        fused_tokens = [self.ctc_converter(ids) for ids in predicted_ids]
-        target = torch.cat(fused_tokens)
-        target_lengths = torch.tensor([len(tokens) for tokens in fused_tokens]) # -> Revise this
+        ctc_input = student_results['encoder_out'].log_softmax(2)
+
+        if USE_GT_FOR_CTC:
+            # Use Ground Truth labels instead of labels from the teacher model
+            gt_tokens = [torch.tensor([self.char_dict[char] for char in label]) for label in batch['labels']]
+            target = torch.cat(gt_tokens)
+            target_lengths = torch.tensor([len(tokens) for tokens in gt_tokens])
+        else:
+            logits = teacher_results['encoder_out'].transpose(0,1)
+            predicted_ids = torch.argmax(logits, dim=-1)
+            fused_tokens = [self.ctc_converter(ids) for ids in predicted_ids]
+            target = torch.cat(fused_tokens)
+            target_lengths = torch.tensor([len(tokens) for tokens in fused_tokens])
         
         # Calculate loss with results
         loss1 = self.L1loss(
@@ -154,7 +187,7 @@ class W2V2Distil(LightningModule):
         loss3 = self.CTCloss(
                 ctc_input, 
                 target, 
-                torch.full(size=(ctc_input.shape[1],), fill_value=ctc_input.shape[0]), # -> Revise this
+                torch.ones(ctc_input.shape[1], dtype=torch.long) * ctc_input.shape[0],
                 target_lengths
             )
         
@@ -200,7 +233,7 @@ class W2V2Distil(LightningModule):
         
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=LEARNING_RATE)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
         return {
             "optimizer": optimizer, 
@@ -209,13 +242,6 @@ class W2V2Distil(LightningModule):
                 "monitor": "v_loss",
             },
         }
-
-    def setup(self, stage=None):
-        if stage == "fit" or stage is None:
-            self.train_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True) # -> Must use all 960h later
-            self.eval_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "dev-clean", download=True)
-        if stage == "test" or stage is None:
-            self.test_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "test-clean", download=True)
 
     def train_dataloader(self):
         return DataLoader(self.train_data, batch_size=self.hparams.batch_size, collate_fn=self.data_collator, num_workers=GPUS*4)
