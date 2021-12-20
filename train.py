@@ -28,8 +28,8 @@ DATA_AMOUNT = "100h"
 # DATA_AMOUNT = "960h"
 COPY_PARAMETERS = True
 USE_GT_FOR_CTC = True
-STUDENT_ENCODER_LAYERS = 2
-TR_LAYER_FLOOR = 1
+STUDENT_ENCODER_LAYERS = 4
+TR_LAYER_FLOOR = 2
 TR_TYPE = "conv1d"
 NUM_EPOCHS = 100
 GPUS = 2
@@ -37,7 +37,7 @@ BATCH_SIZE = 3
 LEARNING_RATE = 1e-4
 ACCUMULATE_GRAD_BATCHES = 1
 MONITOR_LOSSES = True
-OUTPUT_DIR = './results/'
+OUTPUT_DIR = './results-4-2-noloss2/'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 TEST = False
@@ -151,20 +151,20 @@ class W2V2Distil(LightningModule):
         #     "tr_layer_results": result["tr_layer_results"],
         # }
         
-        # Input intermediate result of student model into upper transformer layers of teacher model
-        x = student_results['tr_layer_results'][0].detach()
+        # # Input intermediate result of student model into upper transformer layers of teacher model
+        # x = student_results['tr_layer_results'][0].detach()
 
-        ### MUST REVISE ###
-        for i, layer in enumerate(self.teacher_tf_encoder):
-            if i >= 12:
-                x, z = layer(x)
+        # ### MUST REVISE ###
+        # for i, layer in enumerate(self.teacher_tf_encoder):
+        #     if i >= 12:
+        #         x, z = layer(x)
 
-        x = x.transpose(0, 1)
-        if self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm_first:
-            x = self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm(x)
-        x = x.transpose(0, 1)
-        teacher_tf_encoder_out = self.teacher_model.w2v_encoder.proj(x)
-        ### MUST REVISE ###
+        # x = x.transpose(0, 1)
+        # if self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm_first:
+        #     x = self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm(x)
+        # x = x.transpose(0, 1)
+        # teacher_tf_encoder_out = self.teacher_model.w2v_encoder.proj(x)
+        # ### MUST REVISE ###
         
         # Process output for CTC loss
         ctc_input = student_results['encoder_out'].log_softmax(2)
@@ -183,12 +183,12 @@ class W2V2Distil(LightningModule):
         
         # Calculate loss with results
         losses = [
-            loss1 = self.L1loss(
+            self.L1loss(
                     student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
                     teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
                 ),
-            loss2 = self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
-            loss3 = self.CTCloss(
+            # self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
+            self.CTCloss(
                     ctc_input, 
                     target, 
                     torch.ones(ctc_input.shape[1], dtype=torch.long) * ctc_input.shape[0],
