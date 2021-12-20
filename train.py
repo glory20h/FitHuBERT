@@ -37,7 +37,7 @@ BATCH_SIZE = 3
 LEARNING_RATE = 1e-4
 ACCUMULATE_GRAD_BATCHES = 1
 MONITOR_LOSSES = True
-OUTPUT_DIR = './results-4-2-noloss2/'
+OUTPUT_DIR = './results/'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 TEST = False
@@ -151,20 +151,20 @@ class W2V2Distil(LightningModule):
         #     "tr_layer_results": result["tr_layer_results"],
         # }
         
-        # # Input intermediate result of student model into upper transformer layers of teacher model
-        # x = student_results['tr_layer_results'][0].detach()
+        # Input intermediate result of student model into upper transformer layers of teacher model
+        x = student_results['tr_layer_results'][0].detach()
 
-        # ### MUST REVISE ###
-        # for i, layer in enumerate(self.teacher_tf_encoder):
-        #     if i >= 12:
-        #         x, z = layer(x)
+        ### MUST REVISE ###
+        for i, layer in enumerate(self.teacher_tf_encoder):
+            if i >= 12:
+                x, z = layer(x)
 
-        # x = x.transpose(0, 1)
-        # if self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm_first:
-        #     x = self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm(x)
-        # x = x.transpose(0, 1)
-        # teacher_tf_encoder_out = self.teacher_model.w2v_encoder.proj(x)
-        # ### MUST REVISE ###
+        x = x.transpose(0, 1)
+        if self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm_first:
+            x = self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm(x)
+        x = x.transpose(0, 1)
+        teacher_tf_encoder_out = self.teacher_model.w2v_encoder.proj(x)
+        ### MUST REVISE ###
         
         # Process output for CTC loss
         ctc_input = student_results['encoder_out'].log_softmax(2)
@@ -187,7 +187,7 @@ class W2V2Distil(LightningModule):
                     student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
                     teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
                 ),
-            # self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
+            self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
             self.CTCloss(
                     ctc_input, 
                     target, 
@@ -207,18 +207,18 @@ class W2V2Distil(LightningModule):
     def training_step(self, batch, batch_idx):
         results, losses = self(batch)
         
-        loss = calculate_loss(losses)
+        loss = self.calculate_loss(losses)
 
         if MONITOR_LOSSES:
-            for i, loss in enumerate(losses):
-                self.log(f"loss{i}", loss, prog_bar=True)
+            for i, l in enumerate(losses):
+                self.log(f"loss{i+1}", l, prog_bar=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
         results, losses = self(batch)
         
-        loss = calculate_loss(losses)
+        loss = self.calculate_loss(losses)
 
         predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
         predictions = [self.decoder.decode(ids) for ids in predicted_ids]
@@ -235,7 +235,7 @@ class W2V2Distil(LightningModule):
     def test_step(self, batch, batch_idx):
         results, losses = self(batch)
         
-        loss = calculate_loss(losses)
+        loss = self.calculate_loss(losses)
 
         predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
         predictions = [self.decoder.decode(ids) for ids in predicted_ids]
