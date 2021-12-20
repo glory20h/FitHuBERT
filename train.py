@@ -1,4 +1,3 @@
-# glory20h
 import os
 import re
 import logging
@@ -37,10 +36,14 @@ GPUS = 2
 BATCH_SIZE = 3
 LEARNING_RATE = 1e-4
 ACCUMULATE_GRAD_BATCHES = 1
+MONITOR_LOSSES = True
 OUTPUT_DIR = './results/'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 TEST = False
+# TEST = True
+TEST_SET = "test-clean"
+# TEST_SET = "test-other"
 # --------------------------------------
 
 class W2V2Distil(LightningModule):
@@ -116,7 +119,7 @@ class W2V2Distil(LightningModule):
             train_data_360 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-360", download=True)
             self.train_data = torch.utils.data.ConcatDataset([self.train_data, train_data_360])
         self.eval_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "dev-clean", download=True)
-        self.test_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "test-clean", download=True)
+        self.test_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, TEST_SET, download=True)
 
         # For better pytorch lightning logging
         logging.shutdown()
@@ -179,30 +182,43 @@ class W2V2Distil(LightningModule):
             target_lengths = torch.tensor([len(tokens) for tokens in fused_tokens])
         
         # Calculate loss with results
-        loss1 = self.L1loss(
-                student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
-                teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
-            )
-        loss2 = self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out)
-        loss3 = self.CTCloss(
-                ctc_input, 
-                target, 
-                torch.ones(ctc_input.shape[1], dtype=torch.long) * ctc_input.shape[0],
-                target_lengths
-            )
-        
-        # Can also try weighted sum
-        loss = loss1 + loss2 + loss3
+        losses = [
+            loss1 = self.L1loss(
+                    student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
+                    teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
+                ),
+            loss2 = self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
+            loss3 = self.CTCloss(
+                    ctc_input, 
+                    target, 
+                    torch.ones(ctc_input.shape[1], dtype=torch.long) * ctc_input.shape[0],
+                    target_lengths
+                ),
+        ]
 
-        return student_results, loss
+        return student_results, losses
+
+    def calculate_loss(self, losses):
+        # Can also try weighted sum
+        loss = sum(losses)
+
+        return loss
 
     def training_step(self, batch, batch_idx):
-        results, loss = self(batch)
+        results, losses = self(batch)
+        
+        loss = calculate_loss(losses)
+
+        if MONITOR_LOSSES:
+            for i, loss in enumerate(losses):
+                self.log(f"loss{i}", loss, prog_bar=True)
 
         return loss
 
     def validation_step(self, batch, batch_idx):
-        results, loss = self(batch)
+        results, losses = self(batch)
+        
+        loss = calculate_loss(losses)
 
         predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
         predictions = [self.decoder.decode(ids) for ids in predicted_ids]
@@ -217,7 +233,9 @@ class W2V2Distil(LightningModule):
         return {"v_loss": loss, "wer": wer, "cer": cer}
     
     def test_step(self, batch, batch_idx):
-        results, loss = self(batch)
+        results, losses = self(batch)
+        
+        loss = calculate_loss(losses)
 
         predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
         predictions = [self.decoder.decode(ids) for ids in predicted_ids]
@@ -230,7 +248,6 @@ class W2V2Distil(LightningModule):
         self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
         
         return {"test_loss": loss, "wer": wer, "cer": cer}
-        
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=LEARNING_RATE)
@@ -260,7 +277,7 @@ class W2V2Distil(LightningModule):
 
 if __name__ == '__main__':
     if CHECKPOINT:
-        model = W2V2Distil.load_from_checkpoint(OUTPUT_DIR + CHECKPOINT)
+        model = W2V2Distil().load_from_checkpoint(OUTPUT_DIR + CHECKPOINT)
     else:
         model = W2V2Distil()
 
@@ -294,7 +311,7 @@ if __name__ == '__main__':
     )
 
     if TEST:
-        trainer.test(ckpt_path=OUTPUT_DIR + CHECKPOINT)
+        trainer.test(model)
     else:
         trainer.fit(model)
 
