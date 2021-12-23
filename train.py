@@ -21,12 +21,13 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 # CONFIG ------------------------------
-TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
+# TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
+TEACHER_MODEL = 'wav2vec_small_960h.pt'
 DATA_PATH = '../'
 DATA_AMOUNT = "100h"
 # DATA_AMOUNT = "460h"
 # DATA_AMOUNT = "960h"
-COPY_PARAMETERS = True
+COPY_PARAMETERS = False
 USE_GT_FOR_CTC = True
 STUDENT_ENCODER_LAYERS = 4
 TR_LAYER_FLOOR = 2
@@ -83,22 +84,34 @@ class W2V2Distil(LightningModule):
         self.student_config = CustomWav2Vec2Config()
 
         # Update student model config as required
-        self.student_config.conv_layer_setting.extractor_mode = "layer_norm"
-        self.student_config.conv_layer_setting.conv_bias = True
-        self.student_config.encoder_setting.layer_setting.encoder_embed_dim = 1024
-        self.student_config.encoder_setting.layer_setting.encoder_ffn_embed_dim = 4096
-        self.student_config.encoder_setting.layer_setting.encoder_attention_heads = 16
-        self.student_config.encoder_setting.layer_setting.dropout = 0.0
-        self.student_config.encoder_setting.layer_setting.layer_norm_first=True
-        self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
-        self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
-        self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
-        self.student_config.encoder_setting.dropout_input = 0.1
-        self.student_config.encoder_setting.dropout_features = 0.1
-        self.student_config.encoder_setting.final_dim = 768
-        self.student_config.encoder_setting.latent_temp = (2, 0.1, 0.999995)
-        self.student_config.final_dropout = 0.0
-        self.student_config.targ_d = 32
+        if TEACHER_MODEL == 'wav2vec2_vox_960h_new.pt':
+            # LARGE
+            self.student_config.conv_layer_setting.extractor_mode = "layer_norm"
+            self.student_config.conv_layer_setting.conv_bias = True
+            self.student_config.encoder_setting.layer_setting.encoder_embed_dim = 1024
+            self.student_config.encoder_setting.layer_setting.encoder_ffn_embed_dim = 4096
+            self.student_config.encoder_setting.layer_setting.encoder_attention_heads = 16
+            self.student_config.encoder_setting.layer_setting.dropout = 0.0
+            self.student_config.encoder_setting.layer_setting.layer_norm_first=True
+            self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
+            self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
+            self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
+            self.student_config.encoder_setting.dropout_input = 0.1
+            self.student_config.encoder_setting.dropout_features = 0.1
+            self.student_config.encoder_setting.final_dim = 768
+            self.student_config.encoder_setting.latent_temp = (2, 0.1, 0.999995)
+            self.student_config.final_dropout = 0.0
+            self.student_config.targ_d = 32
+        else:
+            # BASE
+            self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
+            self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
+            self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
+            self.student_config.encoder_setting.dropout_input = 0.1
+            self.student_config.encoder_setting.dropout_features = 0.1
+            self.student_config.encoder_setting.final_dim = 256
+            self.student_config.final_dropout = 0.0
+            self.student_config.targ_d = 32
 
         self.student_model = CustomStudentModel(self.student_config)
 
@@ -156,7 +169,7 @@ class W2V2Distil(LightningModule):
 
         ### MUST REVISE ###
         for i, layer in enumerate(self.teacher_tf_encoder):
-            if i >= 12:
+            if i >= len(self.teacher_tf_encoder) // 2:
                 x, z = layer(x)
 
         x = x.transpose(0, 1)
