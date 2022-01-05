@@ -52,7 +52,7 @@ class ConvFeatureExtractionModelConfig(FairseqDataclass):
     
     drop_out: float = field(
         default=0.5,
-        metadata={"help": "ratio of dropoiut"}
+        metadata={"help": "ratio of dropout"}
     )
     
     
