@@ -20,6 +20,7 @@ from fairseq.modules import (
 )
 
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
+from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
 from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
 
