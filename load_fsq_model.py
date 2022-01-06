@@ -4,10 +4,10 @@ from fairseq.data import Dictionary
 from fairseq.checkpoint_utils import load_checkpoint_to_cpu
 from fairseq.tasks.audio_pretraining import AudioPretrainingTask
 from fairseq.tasks.audio_finetuning import AudioFinetuningTask
-# from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
-from modules.Wav2Vec2Model import Wav2Vec2Model, Wav2Vec2Config
-# from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
-from modules.Wav2Vec2Ctc import Wav2VecCtc, Wav2Vec2CtcConfig
+from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
+# from modules.Wav2Vec2Model import Wav2Vec2Model, Wav2Vec2Config
+from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
+# from modules.Wav2Vec2Ctc import Wav2VecCtc, Wav2Vec2CtcConfig
 
 from fairseq import models, quantization_utils
 
