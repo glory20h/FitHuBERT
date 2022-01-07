@@ -8,6 +8,8 @@ from torch.utils.data import Dataset, DataLoader
 
 from datasets import load_metric
 
+from transformers import get_scheduler
+
 from load_fsq_model import load_model
 from modules.CustomWav2Vec2 import CustomWav2Vec2Config
 from utils import *
@@ -24,28 +26,41 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
 TEACHER_MODEL = 'wav2vec_small_960h.pt'
 DATA_PATH = '../'
-DATA_AMOUNT = "100h"
+# DATA_AMOUNT = "100h"
 # DATA_AMOUNT = "460h"
-# DATA_AMOUNT = "960h"
-COPY_PARAMETERS = False
+DATA_AMOUNT = "960h"
+COPY_PARAMETERS = True
 USE_GT_FOR_CTC = True
-STUDENT_ENCODER_LAYERS = 4
-TR_LAYER_FLOOR = 2
-TR_TYPE = "conv1d"
+STUDENT_ENCODER_LAYERS = 2
+ENABLE_TR_LAYER = False
+TR_LAYER_FLOOR = 1
+TR_TYPE = 'fc2'
+TR_OUTPUT_FACTOR = 2
 NUM_EPOCHS = 100
 GPUS = 2
-BATCH_SIZE = 3
-LEARNING_RATE = 1e-4
-ACCUMULATE_GRAD_BATCHES = 1
+BATCH_SIZE = 1
+LEARNING_RATE = 1e-3
+ACCUMULATE_GRAD_BATCHES = 12 # Effective batch size of 24 utterances
 MONITOR_LOSSES = True
 OUTPUT_DIR = './results/'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 TEST = False
-# TEST = True
 TEST_SET = "test-clean"
 # TEST_SET = "test-other"
 # --------------------------------------
+
+class ProjectionHead(nn.Module):
+    def __init__(self, embedding_dim):
+        super(ProjectionHead, self).__init__()
+        self.layer = nn.Sequential(
+                        nn.Linear(embedding_dim, embedding_dim),
+                        nn.GELU(),
+                        nn.Linear(embedding_dim, embedding_dim),
+                    )
+        
+    def forward(self, x):
+        return self.layer(x)
 
 class W2V2Distil(LightningModule):
     def __init__(self, 
@@ -74,18 +89,19 @@ class W2V2Distil(LightningModule):
             "'": 27, "X": 28, "J": 29, "Q": 30, "Z": 31}
 
         self.teacher_model = load_model(TEACHER_MODEL)
+
         # Freeze teacher model
         for param in self.teacher_model.parameters():
             param.requires_grad = False
         
         # Get components of teacher_model
-        self.teacher_tf_encoder = self.teacher_model.w2v_encoder.w2v_model.encoder.layers # -> TransformerSentenceEncoder stacks
+        # self.teacher_tf_encoder = self.teacher_model.w2v_encoder.w2v_model.encoder.layers # -> TransformerSentenceEncoder stacks
 
         self.student_config = CustomWav2Vec2Config()
 
         # Update student model config as required
         if TEACHER_MODEL == 'wav2vec2_vox_960h_new.pt':
-            # LARGE
+            # FOR LARGE TEACHER
             self.student_config.conv_layer_setting.extractor_mode = "layer_norm"
             self.student_config.conv_layer_setting.conv_bias = True
             self.student_config.encoder_setting.layer_setting.encoder_embed_dim = 1024
@@ -93,6 +109,7 @@ class W2V2Distil(LightningModule):
             self.student_config.encoder_setting.layer_setting.encoder_attention_heads = 16
             self.student_config.encoder_setting.layer_setting.dropout = 0.0
             self.student_config.encoder_setting.layer_setting.layer_norm_first=True
+            self.student_config.encoder_setting.able_tr_layer = ENABLE_TR_LAYER
             self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
             self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
             self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
@@ -103,7 +120,8 @@ class W2V2Distil(LightningModule):
             self.student_config.final_dropout = 0.0
             self.student_config.targ_d = 32
         else:
-            # BASE
+            # FOR BASE TEACHER
+            self.student_config.encoder_setting.able_tr_layer = ENABLE_TR_LAYER
             self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
             self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
             self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
@@ -115,14 +133,22 @@ class W2V2Distil(LightningModule):
 
         self.student_model = CustomStudentModel(self.student_config)
 
-        # Copy model parameters of teacher model (conv feature extractor & first transformer layer)
+        # Copy model parameters of teacher model
         if COPY_PARAMETERS:
+            # Copy feature extractor
             self.student_model.student_model.feature_extractor.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.feature_extractor.state_dict())
             self.student_model.student_model.post_extract_proj.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.post_extract_proj.state_dict())
             self.student_model.student_model.encoder.pos_conv.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.pos_conv.state_dict())
-            self.student_model.student_model.encoder.layers[0][0].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[0].state_dict())
+            # Copy Encoder layers
+            self.student_model.student_model.encoder.layers[0].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[0].state_dict())
+            self.student_model.student_model.encoder.layers[1].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[1].state_dict())
 
-        # download
+        # Projection Heads
+        self.proj_head1 = ProjectionHead(self.student_config.encoder_setting.layer_setting.encoder_embed_dim)
+        self.proj_head2 = ProjectionHead(self.student_config.encoder_setting.layer_setting.encoder_embed_dim)
+        self.proj_head3 = ProjectionHead(self.student_config.encoder_setting.layer_setting.encoder_embed_dim)
+
+        # download & prepare data
         self.train_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True)
         if DATA_AMOUNT == "960h":
             train_data_360 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-360", download=True)
@@ -139,9 +165,13 @@ class W2V2Distil(LightningModule):
         reload(logging)
 
     def forward(self, batch):
+        # Seems like lightning had been using the teacher model as training mode the whole time
+        self.teacher_model.eval()
+
         # Input batch into teacher_model
         result = self.teacher_model.w2v_encoder.w2v_model.extract_features(
             source=batch['src'], 
+            # padding_mask=batch['mask'],
             padding_mask=None,
             layer=100
         )
@@ -164,23 +194,28 @@ class W2V2Distil(LightningModule):
         #     "tr_layer_results": result["tr_layer_results"],
         # }
         
-        # Input intermediate result of student model into upper transformer layers of teacher model
-        x = student_results['tr_layer_results'][0].detach()
+        # # Input intermediate result of student model into upper transformer layers of teacher model
+        # x = student_results['tr_layer_results'][0].detach()
 
-        ### MUST REVISE ###
-        for i, layer in enumerate(self.teacher_tf_encoder):
-            if i >= len(self.teacher_tf_encoder) // 2:
-                x, z = layer(x)
+        # ### MUST REVISE ###
+        # for i, layer in enumerate(self.teacher_tf_encoder):
+        #     if i >= len(self.teacher_tf_encoder) // 2:
+        #         x, z = layer(x)
 
-        x = x.transpose(0, 1)
-        if self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm_first:
-            x = self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm(x)
-        x = x.transpose(0, 1)
-        teacher_tf_encoder_out = self.teacher_model.w2v_encoder.proj(x)
-        ### MUST REVISE ###
+        # x = x.transpose(0, 1)
+        # if self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm_first:
+        #     x = self.teacher_model.w2v_encoder.w2v_model.encoder.layer_norm(x)
+        # x = x.transpose(0, 1)
+        # teacher_tf_encoder_out = self.teacher_model.w2v_encoder.proj(x)
+        # ### MUST REVISE ###
+
+        # Projection Heads
+        proj1 = self.proj_head1(student_results['layer_results'][-1][0])
+        proj2 = self.proj_head2(student_results['layer_results'][-1][0])
+        proj3 = self.proj_head3(student_results['layer_results'][-1][0])
         
         # Process output for CTC loss
-        ctc_input = student_results['encoder_out'].log_softmax(2)
+        ctc_input = student_results['encoder_out'].log_softmax(2) # -> Revise this
 
         if USE_GT_FOR_CTC:
             # Use Ground Truth labels instead of labels from the teacher model
@@ -194,17 +229,39 @@ class W2V2Distil(LightningModule):
             target = torch.cat(fused_tokens)
             target_lengths = torch.tensor([len(tokens) for tokens in fused_tokens])
         
+        # # Calculate loss with results
+        # losses = [
+        #     self.L1loss(
+        #             student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
+        #             teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
+        #         ),
+        #     self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
+        #     self.CTCloss(
+        #             ctc_input, 
+        #             target, 
+        #             torch.ones(ctc_input.shape[1], dtype=torch.long) * ctc_input.shape[0],
+        #             target_lengths
+        #         ),
+        # ]
+
         # Calculate loss with results
         losses = [
             self.L1loss(
-                    student_results['layer_results'][TR_LAYER_FLOOR-1][0], 
-                    teacher_results['layer_results'][len(self.teacher_tf_encoder)//2-1][0]
+                    proj1, 
+                    teacher_results['layer_results'][3][0]
                 ),
-            self.L1loss(student_results['encoder_out'], teacher_tf_encoder_out),
+            self.L1loss(
+                    proj2, 
+                    teacher_results['layer_results'][7][0]
+                ),
+            self.L1loss(
+                    proj3, 
+                    teacher_results['layer_results'][11][0]
+                ),
             self.CTCloss(
                     ctc_input, 
                     target, 
-                    torch.ones(ctc_input.shape[1], dtype=torch.long) * ctc_input.shape[0],
+                    torch.full((ctc_input.shape[1],), fill_value=ctc_input.shape[0]),
                     target_lengths
                 ),
         ]
@@ -214,6 +271,8 @@ class W2V2Distil(LightningModule):
     def calculate_loss(self, losses):
         # Can also try weighted sum
         loss = sum(losses)
+
+        # Must add calculating cosine similarity loss here
 
         return loss
 
@@ -236,14 +295,19 @@ class W2V2Distil(LightningModule):
         predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
         predictions = [self.decoder.decode(ids) for ids in predicted_ids]
 
-        wer = self.wer_metric.compute(predictions=predictions, references=batch['labels'])
-        cer = self.cer_metric.compute(predictions=predictions, references=batch['labels'])
+        self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
+        self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
 
         self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
+
+        return {"v_loss": loss}
+
+    def validation_epoch_end(self, validation_step_outputs):
+        wer = self.wer_metric.compute()
+        cer = self.cer_metric.compute()
+
         self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
         self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-        
-        return {"v_loss": loss, "wer": wer, "cer": cer}
     
     def test_step(self, batch, batch_idx):
         results, losses = self(batch)
@@ -253,24 +317,41 @@ class W2V2Distil(LightningModule):
         predicted_ids = np.argmax(results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
         predictions = [self.decoder.decode(ids) for ids in predicted_ids]
 
-        wer = self.wer_metric.compute(predictions=predictions, references=batch['labels'])
-        cer = self.cer_metric.compute(predictions=predictions, references=batch['labels'])
+        wer = self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
+        cer = self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
 
         self.log("test_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
+
+        return {"test_loss": loss}
+
+    def test_epoch_end(self, test_step_outputs):
+        wer = self.wer_metric.compute()
+        cer = self.cer_metric.compute()
+
         self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
         self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-        
-        return {"test_loss": loss, "wer": wer, "cer": cer}
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=LEARNING_RATE)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
+
+        train_batches = len(self.train_dataloader()) // GPUS
+        num_training_steps = (NUM_EPOCHS * train_batches) // ACCUMULATE_GRAD_BATCHES
+        num_warmup_steps = int(num_training_steps * 0.05) # Linearly increase the learning rate for the first 5% of updates, then linearly decrease
+
+        lr_scheduler = get_scheduler(
+            "linear",
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps
+        )
         return {
             "optimizer": optimizer, 
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "monitor": "v_loss",
-            },
+            "lr_scheduler": lr_scheduler,
+            # "lr_scheduler": {
+            #     "scheduler": scheduler,
+            #     "monitor": "cer",
+            # },
         }
 
     def train_dataloader(self):
@@ -300,12 +381,12 @@ if __name__ == '__main__':
         verbose=True,
         save_last=True,
         save_top_k=3,
-        monitor="v_loss",
+        monitor='cer',
         mode='min'
     )
 
     early_stopping = EarlyStopping(
-        monitor='v_loss',
+        monitor='cer',
         patience=15,
         verbose=True,
         mode='min'

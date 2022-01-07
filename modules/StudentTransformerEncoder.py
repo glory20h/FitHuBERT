@@ -79,7 +79,7 @@ class StudentTransformerEncoderConfig(FairseqDataclass):
         metadata={"help": "If tr is conv1d, list of kernel and stride for conv1d"}
     )
     
-    tr_fcl_output_factor: int = field(
+    tr_fc_output_factor: int = field(
         default=2,
         metadata={"help": "Factor to reduce time length"}
     )
@@ -117,18 +117,27 @@ class StudentTransformerEncoder(nn.Module):
         self.pos_conv = nn.utils.weight_norm(self.pos_conv, name="weight", dim=2)
         self.pos_conv = nn.Sequential(self.pos_conv, SamePad(cfg.conv_pos), nn.GELU())
 
-        self.tr_fcl_output_factor = None
+        self.tr_fc_output_factor = None
+        self.type_of_tr_layer = cfg.type_of_tr_layer
         if not cfg.able_tr_layer:
             tr_layer = None  
         else:
-            if cfg.type_of_tr_layer == 'fcl':
-                self.tr_fcl_output_factor = cfg.tr_fcl_output_factor
+            if self.type_of_tr_layer == 'fc1':
+                self.tr_fc_output_factor = cfg.tr_fc_output_factor
                 # Input length will be verified first.
                 tr_layer = nn.Linear(
-                    self.embedding_dim * self.tr_fcl_output_factor,
+                    self.embedding_dim * self.tr_fc_output_factor,
                     self.embedding_dim
                 )
                 nn.init.xavier_uniform_(tr_layer.weight)
+
+            elif self.type_of_tr_layer == 'fc2':
+                self.tr_fc_output_factor = cfg.tr_fc_output_factor
+                tr_layer = nn.Sequential(
+                    nn.Linear(self.embedding_dim * self.tr_fc_output_factor, self.embedding_dim * self.tr_fc_output_factor),
+                    nn.GELU(),
+                    nn.Linear(self.embedding_dim * self.tr_fc_output_factor, self.embedding_dim),
+                )
                 
             elif cfg.type_of_tr_layer == 'conv1d':
                 (kernel, stride) = eval(cfg.tr_conv1d_kernel_stride)
@@ -234,11 +243,11 @@ class StudentTransformerEncoder(nn.Module):
                 # Time Reduction
                 elif i == 1:   
                     for j, layer in enumerate(layer_block):
-                        if isinstance(layer, torch.nn.Conv1d): 
+                        if self.type_of_tr_layer == 'conv1d': 
                             x = x.permute(1, 2, 0).contiguous()
                             x = layer(x)
                             x = x.permute(2, 0, 1).contiguous()
-                        elif isinstance(layer, torch.nn.Linear):
+                        elif self.type_of_tr_layer == 'fc1' or self.type_of_tr_layer == 'fc2':
                             # T x B x C
                             x = self.concat_channelwise(x)
                             x = layer(x)
@@ -273,7 +282,7 @@ class StudentTransformerEncoder(nn.Module):
     def concat_channelwise(self, x):
         # x is shaped T x B x C
         time_length, batch, channel = x.size()
-        how_many_pad = self.tr_fcl_output_factor - time_length % self.tr_fcl_output_factor 
+        how_many_pad = self.tr_fc_output_factor - time_length % self.tr_fc_output_factor 
         if how_many_pad != 0:
             # zero_pad = torch.zeros([how_many_pad, batch, channel]).cuda()
             zero_pad = torch.zeros([how_many_pad, batch, channel])
@@ -283,9 +292,9 @@ class StudentTransformerEncoder(nn.Module):
         result = torch.tensor([]).cuda()
         
         j = 0
-        while (j < self.tr_fcl_output_factor):
+        while (j < self.tr_fc_output_factor):
             # (T / factor) X B x (C * factor)
-            tensor_to_concat = x[j::self.tr_fcl_output_factor,:,:]
+            tensor_to_concat = x[j::self.tr_fc_output_factor,:,:]
             result = torch.cat([result, tensor_to_concat], dim = 2)
             j += 1
         # (T / factor) X B X (C * factor)

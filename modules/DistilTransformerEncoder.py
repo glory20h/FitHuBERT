@@ -1,3 +1,5 @@
+# Revised by DistilHuBERT
+
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
@@ -52,7 +54,7 @@ class TransformerEncoderConfig(FairseqDataclass):
         metadata={"help": "probability of dropping a transformer layer"}
     )
     
-class TransformerEncoder(nn.Module):
+class DistilTransformerEncoder(nn.Module):
     def __init__(self,
                 cfg: TransformerEncoderConfig
                 ):
@@ -94,8 +96,8 @@ class TransformerEncoder(nn.Module):
 
         self.apply(init_bert_params)
 
-    def forward(self, x, padding_mask=None, layer=None):
-        x, layer_results = self.extract_features(x, padding_mask, layer)
+    def forward(self, x, padding_mask=None, get_hidden=False):
+        x, layer_results = self.extract_features(x, padding_mask, get_hidden = get_hidden)
 
         if self.layer_norm_first and layer is None:
             x = self.layer_norm(x)
@@ -104,7 +106,7 @@ class TransformerEncoder(nn.Module):
 
         return x, layer_results
 
-    def extract_features(self, x, padding_mask=None, tgt_layer=None):
+    def extract_features(self, x, padding_mask=None, get_hidden=False):
 
         if padding_mask is not None:
             x = index_put(x, padding_mask, 0)
@@ -122,19 +124,14 @@ class TransformerEncoder(nn.Module):
         x = x.transpose(0, 1)
 
         layer_results = []
-        r = None
+
         for i, layer in enumerate(self.layers):
             dropout_probability = np.random.random()
             if not self.training or (dropout_probability > self.layerdrop):
                 x, z = layer(x, self_attn_padding_mask=padding_mask, need_weights=False)
-                if tgt_layer is not None:
-                    layer_results.append((x, z))
-            if i == tgt_layer:
-                r = x
-                break
-
-        if r is not None:
-            x = r
+                if get_hidden:
+                    # Only append latent representation, no intermediate attention
+                    layer_results.append(x.transpose(0,1))
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
