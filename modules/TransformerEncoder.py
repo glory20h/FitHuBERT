@@ -20,7 +20,6 @@ from fairseq.modules import (
 )
 
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
-from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
 from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayer, TransformerSentenceEncoderLayerConfig
 
@@ -75,7 +74,7 @@ class TransformerEncoder(nn.Module):
         std = math.sqrt((4 * (1.0 - dropout)) / (cfg.conv_pos * self.embedding_dim))
         nn.init.normal_(self.pos_conv.weight, mean=0, std=std)
         nn.init.constant_(self.pos_conv.bias, 0)
-
+        
         self.pos_conv = nn.utils.weight_norm(self.pos_conv, name="weight", dim=2)
         self.pos_conv = nn.Sequential(self.pos_conv, SamePad(cfg.conv_pos), nn.GELU())
 
