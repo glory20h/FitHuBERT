@@ -10,9 +10,10 @@ from datasets import load_metric
 
 from transformers import get_scheduler
 
-from load_fsq_model import load_model
-from modules.CustomWav2Vec2 import CustomWav2Vec2Config
-from utils import *
+#from load_fsq_model import load_model_and_config
+from modules.utils_for_custom import convert_dict_to_custom_config
+from modules.CustomWav2Vec2Model import CustomWav2Vec2Config, CustomWav2Vec2Model
+#from modules.utils import *
 
 from importlib import reload
 logging.shutdown()
@@ -23,28 +24,39 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 # CONFIG ------------------------------
+# Teacher model related
 # TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
-TEACHER_MODEL = 'wav2vec_small_960h.pt'
-DATA_PATH = '../'
-# DATA_AMOUNT = "100h"
-# DATA_AMOUNT = "460h"
-DATA_AMOUNT = "960h"
+TEACHER_MODEL = '/home/kangwook/parameters/w2v2/wav2vec_small.pt'
 COPY_PARAMETERS = True
-USE_GT_FOR_CTC = True
+
+# Student model related
 STUDENT_ENCODER_LAYERS = 2
 ENABLE_TR_LAYER = False
 TR_LAYER_FLOOR = 1
 TR_TYPE = 'fc2'
 TR_OUTPUT_FACTOR = 2
+
+# DB for training related 
+DATA_PATH = '../data/'
+DATA_AMOUNT = "100h"
+# DATA_AMOUNT = "460h"
+# DATA_AMOUNT = "960h"
+
+# Distillation training related
+USE_GT_FOR_CTC = True
 NUM_EPOCHS = 100
 GPUS = 2
 BATCH_SIZE = 1
 LEARNING_RATE = 1e-3
 ACCUMULATE_GRAD_BATCHES = 12 # Effective batch size of 24 utterances
 MONITOR_LOSSES = True
+
+# Checkpoint related
 OUTPUT_DIR = './results/'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
+
+# Evaluation related
 TEST = False
 TEST_SET = "test-clean"
 # TEST_SET = "test-other"
@@ -88,60 +100,44 @@ class W2V2Distil(LightningModule):
             "F": 20, "G": 21, "Y": 22, "P": 23, "B": 24, "V": 25, "K": 26, 
             "'": 27, "X": 28, "J": 29, "Q": 30, "Z": 31}
 
-        self.teacher_model = load_model(TEACHER_MODEL)
+        self.teacher_model, teacher_config, agnostic_token = load_model_and_config(TEACHER_MODEL)
+        self.teacher_config = convert_dict_to_custom_config(teacher_config)
 
         # Freeze teacher model
         for param in self.teacher_model.parameters():
             param.requires_grad = False
         
-        # Get components of teacher_model
-        # self.teacher_tf_encoder = self.teacher_model.w2v_encoder.w2v_model.encoder.layers # -> TransformerSentenceEncoder stacks
+        # Please define configs newly between student and teacher
+        self.student_config = self.teacher_config
+        self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
+        self.student_config.encoder_setting.able_tr_layer = ENABLE_TR_LAYER
+        self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
+        self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
+        # Model Initialize -> Distillation training -> Add FC/Dropout & Fine-tuning
+        self.student_model = CustomWav2Vec2Model(self.student_config)
 
-        self.student_config = CustomWav2Vec2Config()
-
-        # Update student model config as required
-        if TEACHER_MODEL == 'wav2vec2_vox_960h_new.pt':
-            # FOR LARGE TEACHER
-            self.student_config.conv_layer_setting.extractor_mode = "layer_norm"
-            self.student_config.conv_layer_setting.conv_bias = True
-            self.student_config.encoder_setting.layer_setting.encoder_embed_dim = 1024
-            self.student_config.encoder_setting.layer_setting.encoder_ffn_embed_dim = 4096
-            self.student_config.encoder_setting.layer_setting.encoder_attention_heads = 16
-            self.student_config.encoder_setting.layer_setting.dropout = 0.0
-            self.student_config.encoder_setting.layer_setting.layer_norm_first=True
-            self.student_config.encoder_setting.able_tr_layer = ENABLE_TR_LAYER
-            self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
-            self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
-            self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
-            self.student_config.encoder_setting.dropout_input = 0.1
-            self.student_config.encoder_setting.dropout_features = 0.1
-            self.student_config.encoder_setting.final_dim = 768
-            self.student_config.encoder_setting.latent_temp = (2, 0.1, 0.999995)
-            self.student_config.final_dropout = 0.0
-            self.student_config.targ_d = 32
+        '''
+        if agnostic_token:
+            self.student_model = CustomWav2Vec2Model(self.student_config) 
+        # Distill model & fine-tuned FC both
+        # Use CTC loss or not
         else:
-            # FOR BASE TEACHER
-            self.student_config.encoder_setting.able_tr_layer = ENABLE_TR_LAYER
-            self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
-            self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
-            self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
-            self.student_config.encoder_setting.dropout_input = 0.1
-            self.student_config.encoder_setting.dropout_features = 0.1
-            self.student_config.encoder_setting.final_dim = 256
-            self.student_config.final_dropout = 0.0
-            self.student_config.targ_d = 32
-
-        self.student_model = CustomStudentModel(self.student_config)
+            tmp_cfg = CustomWav2Vec2EncoderConfig()
+            tmp_cfg.custom_wav2vec2_model_setting = self.student_model
+            self.student_config = tmp_cfg
+            self.student_encoder = CustomWav2Vec2Encoder(self.student_config)
+            self.student_model = self.student_encoder.custom_model
+        '''
 
         # Copy model parameters of teacher model
         if COPY_PARAMETERS:
             # Copy feature extractor
-            self.student_model.student_model.feature_extractor.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.feature_extractor.state_dict())
-            self.student_model.student_model.post_extract_proj.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.post_extract_proj.state_dict())
-            self.student_model.student_model.encoder.pos_conv.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.pos_conv.state_dict())
+            self.student_model.feature_extractor.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.feature_extractor.state_dict())
+            self.student_model.post_extract_proj.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.post_extract_proj.state_dict())
+            self.student_model.encoder.pos_conv.load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.pos_conv.state_dict())
             # Copy Encoder layers
-            self.student_model.student_model.encoder.layers[0].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[0].state_dict())
-            self.student_model.student_model.encoder.layers[1].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[1].state_dict())
+            self.student_model.encoder.layers[0].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[0].state_dict())
+            self.student_model.encoder.layers[1].load_state_dict(self.teacher_model.w2v_encoder.w2v_model.encoder.layers[1].state_dict())
 
         # Projection Heads
         self.proj_head1 = ProjectionHead(self.student_config.encoder_setting.layer_setting.encoder_embed_dim)
