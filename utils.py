@@ -1,14 +1,30 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import math
 
 from itertools import groupby
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass, field
+from omegaconf import MISSING, II, open_dict
+
+from argparse import Namespace
+import contextlib
+import copy
 
 from torch.nn.utils.rnn import pad_sequence
+from fairseq.data import Dictionary
+from fairseq.checkpoint_utils import load_checkpoint_to_cpu
+from fairseq.tasks.audio_pretraining import AudioPretrainingTask
+from fairseq.tasks.audio_finetuning import AudioFinetuningTask
+from fairseq import models, quantization_utils
+from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
 
-from modules.CustomWav2Vec2 import CustomWav2Vec2Model
-from modules.utils_for_asr import Linear
+from modules.CustomWav2Vec2Model import CustomWav2Vec2Model
+
+from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
+from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
 
 # Alternative for Wav2VecEncoder
 class CustomStudentModel(nn.Module):
@@ -31,6 +47,7 @@ class CustomStudentModel(nn.Module):
             "tr_layer_results": result["tr_layer_results"],
         }
 
+
 class DataCollatorWithPadding:
     def __call__(self, features: List[Dict[str, Any]]):
         # split inputs and labels since they have to be of different lengths and need
@@ -42,6 +59,7 @@ class DataCollatorWithPadding:
         mask = torch.zeros(src.shape).masked_fill_(src==0, 1)
         
         return {'src': src, 'mask': mask, 'labels': labels}
+
 
 class Decoder:
     def __init__(self):
@@ -58,7 +76,8 @@ class Decoder:
         fused_tokens = [tok[0] for tok in groupby(converted_tokens)]
         output = ' '.join(''.join(''.join(fused_tokens).split("<s>")).split("|")).rstrip()
         return output
-    
+ 
+
 class CTCSequenceConverter:
     def __init__(self, return_type="pt"):
         self.return_type = return_type
@@ -68,3 +87,79 @@ class CTCSequenceConverter:
             return torch.tensor([tok[0] for tok in groupby(ids) if tok[0] != 0])
         
         return [tok[0] for tok in groupby(ids) if tok[0] != 0]
+
+
+def Embedding(num_embeddings, embedding_dim, padding_idx):
+    m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
+    nn.init.normal_(m.weight, mean=0, std=embedding_dim ** -0.5)
+    nn.init.constant_(m.weight[padding_idx], 0)
+    return m
+
+
+def Linear(in_features, out_features, bias=True):
+    m = nn.Linear(in_features, out_features, bias)
+    nn.init.xavier_uniform_(m.weight)
+    if bias:
+        nn.init.constant_(m.bias, 0.0)
+    return m
+
+
+def load_model(filename, arg_overrides: Optional[Dict[str, Any]] = None):
+
+    state = load_checkpoint_to_cpu(filename, arg_overrides)
+
+    if "args" in state and state["args"] is not None:
+        cfg = convert_namespace_to_omegaconf(state["args"])
+    elif "cfg" in state and state["cfg"] is not None:
+        cfg = state["cfg"]
+    
+    model_cfg = cfg.model
+    model_type = getattr(model_cfg, "_name", None) # or getattr(cfg, "arch", None)
+    
+    if model_type == 'wav2vec2':
+        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
+        model = Wav2Vec2Model.build_model(model_cfg)
+    elif model_type == 'wav2vec_ctc':
+        cfg.task['data'] = './' # Set path where dict exists
+        task = AudioFinetuningTask.setup_task(cfg.task)
+        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
+        model = Wav2VecCtc.build_model(model_cfg, task)
+    
+    model = quantization_utils.quantize_model_scalar(model, cfg)
+
+    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
+
+    return model
+
+
+def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = None):
+
+    state = load_checkpoint_to_cpu(filename, arg_overrides)
+
+    if "args" in state and state["args"] is not None:
+        cfg = convert_namespace_to_omegaconf(state["args"])
+    elif "cfg" in state and state["cfg"] is not None:
+        cfg = state["cfg"]
+    
+    model_cfg = cfg.model
+    model_type = getattr(model_cfg, "_name", None) # or getattr(cfg, "arch", None)
+    agnostic_token = None
+
+    if model_type == 'wav2vec2':
+        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
+        model = Wav2Vec2Model.build_model(model_cfg)
+        config = state["cfg"]["model"]
+        agnostic_token = True
+    elif model_type == 'wav2vec_ctc':
+        cfg.task['data'] = './' # Set path where dict exists
+        task = AudioFinetuningTask.setup_task(cfg.task)
+        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
+        model = Wav2VecCtc.build_model(model_cfg, task)
+        config = state["cfg"]["model"]["w2v_args"]["model"]
+        agnostic_token = False
+
+    model = quantization_utils.quantize_model_scalar(model, cfg)
+
+    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
+
+    return model, config, agnostic_token
