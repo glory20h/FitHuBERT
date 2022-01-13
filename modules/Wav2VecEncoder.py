@@ -29,32 +29,32 @@ from fairseq.modules import (
 )
 
 from .Wav2Vec2Model import Wav2Vec2Config, Wav2Vec2Model
-from .utils_for_asr import Embedding, Linear, convert_to_custom_config
+from .utils_for_asr import Embedding, Linear, convert_dict_to_config
 
 @dataclass
 class Wav2Vec2AsrConfig(FairseqDataclass):
     # Parameter settings for fine-tuning
-    w2v_path: str = field(
+    w2v_path: str = field(  #
         default=MISSING, metadata={"help": "path to wav2vec 2.0 model"}
     )
-    no_pretrained_weights: bool = field(
+    no_pretrained_weights: bool = field(  #
         default=False, metadata={"help": "if true, does not load pretrained weights"}
     )
     dropout_input: float = field(
         default=0.0,
         metadata={"help": "dropout to apply to the input (after feat extr)"},
     )
-    final_dropout: float = field(
+    final_dropout: float = field(  #
         default=0.0,
         metadata={"help": "dropout after transformer and before final projection"},
     )
-    dropout: float = field(
-        default=0.0, metadata={"help": "dropout probability inside wav2vec 2.0 model"}
+    dropout: float = field(  
+        default=0.0, metadata={"help": "dropout probability inside transformer of wav2vec 2.0 model"}
     )
     attention_dropout: float = field(
         default=0.0,
         metadata={
-            "help": "dropout probability for attention weights inside wav2vec 2.0 model"
+            "help": "dropout probability for attention weights inside transformer of wav2vec 2.0 model"
         },
     )
     activation_dropout: float = field(
@@ -76,9 +76,14 @@ class Wav2Vec2AsrConfig(FairseqDataclass):
     encoder_embed_dim: Optional[int] = field(
         default=768, metadata={"help": "encoder embedding dimension"}
     )
-
-    # masking
-    apply_mask: bool = field(
+    feature_grad_mult: float = field(
+        default=0.0, metadata={"help": "reset feature grad mult in wav2vec 2.0 to this"}
+    )
+    layerdrop: float = field(
+        default=0.0, metadata={"help": "probability of dropping a layer in wav2vec 2.0"}
+    )
+    # time axis masking
+    apply_mask: bool = field(  #
         default=False, metadata={"help": "apply masking during fine-tuning"}
     )
     mask_length: int = field(
@@ -108,7 +113,7 @@ class Wav2Vec2AsrConfig(FairseqDataclass):
         metadata={"help": "min space between spans (if no overlap is enabled)"},
     )
 
-    # channel masking
+    # channel axis masking
     mask_channel_length: int = field(
         default=10, metadata={"help": "length of the mask for features (channels)"}
     )
@@ -129,20 +134,16 @@ class Wav2Vec2AsrConfig(FairseqDataclass):
     no_mask_channel_overlap: bool = field(
         default=False, metadata={"help": "whether to allow channel masks to overlap"}
     )
-    freeze_finetune_updates: int = field(
-        default=0, metadata={"help": "dont finetune wav2vec for this many updates"}
-    )
-    feature_grad_mult: float = field(
-        default=0.0, metadata={"help": "reset feature grad mult in wav2vec 2.0 to this"}
-    )
-    layerdrop: float = field(
-        default=0.0, metadata={"help": "probability of dropping a layer in wav2vec 2.0"}
-    )
     mask_channel_min_space: Optional[int] = field(
         default=1,
         metadata={"help": "min space between spans (if no overlap is enabled)"},
     )
     mask_channel_before: bool = False
+
+    # Fine-tuning related
+    freeze_finetune_updates: int = field(  #
+        default=0, metadata={"help": "dont finetune wav2vec for this many updates"}
+    )
     normalize: bool = II("task.normalize")
     data: str = II("task.data")
     # this holds the loaded wav2vec args
@@ -205,7 +206,7 @@ class Wav2VecEncoder(FairseqEncoder):
         else:
             w2v_config = None
         
-        w2v_config = convert_to_custom_config(w2v_config)
+        w2v_config = convert_dict_to_config(w2v_config)
         task = tasks.setup_task(w2v_args.task)
         model = Wav2Vec2Model(w2v_config)
              
