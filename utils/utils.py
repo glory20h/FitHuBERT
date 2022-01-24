@@ -13,12 +13,15 @@ import contextlib
 import copy
 
 from torch.nn.utils.rnn import pad_sequence
+from fairseq import tasks
 from fairseq import quantization_utils
+from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
 from fairseq.checkpoint_utils import load_checkpoint_to_cpu
 from fairseq.tasks.audio_finetuning import AudioFinetuningTask
-from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
 from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
 from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
+from fairseq.models.hubert.hubert import HubertModel, HubertConfig
+from omegaconf.omegaconf import open_dict
 
 from modules.CustomWav2Vec2Model import CustomWav2Vec2Model
 
@@ -203,6 +206,51 @@ class CTCSequenceConverter:
         return [tok[0] for tok in groupby(ids) if tok[0] != 0]
 
 
+def load_model(filename, return_config=True, arg_overrides: Optional[Dict[str, Any]] = None):
+    """Load a fairseq model with checkpoint."""
+    state = load_checkpoint_to_cpu(filename, arg_overrides)
+
+    if "args" in state and state["args"] is not None:
+        cfg = convert_namespace_to_omegaconf(state["args"])
+    elif "cfg" in state and state["cfg"] is not None:
+        cfg = state["cfg"]
+    
+    model_cfg = cfg.model
+    model_type = getattr(model_cfg, "_name", None)
+    task_agnostic = True
+
+    if model_type == 'wav2vec2':
+        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
+        model = Wav2Vec2Model.build_model(model_cfg)
+    elif model_type == 'wav2vec_ctc':
+        cfg.task['data'] = './' # Set path where dict exists
+        task = AudioFinetuningTask.setup_task(cfg.task)
+        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
+        model = Wav2VecCtc.build_model(model_cfg, task)
+        task_agnostic = False
+    elif model_type == "hubert":
+        task = tasks.setup_task(cfg.task)
+        task.load_state_dict(state["task_state"])
+        model_cfg = merge_with_parent(HubertConfig(), model_cfg)
+        # Update needed due to a bug in latest version of fairseq
+        with open_dict(model_cfg):
+            model_cfg.required_seq_len_multiple = 1
+        model = HubertModel.build_model(model_cfg, task)
+    else:
+        raise NotImplementedError(f"model '{model_type}' is not supported.")
+
+    model = quantization_utils.quantize_model_scalar(model, cfg)
+    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
+
+    return model, model_cfg, task_agnostic
+
+
+def freeze_model(model):
+    """Freeze all parameters in a model."""
+    for param in model.parameters():
+        param.requires_grad = False
+
+
 def Embedding(num_embeddings, embedding_dim, padding_idx):
     m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
     nn.init.normal_(m.weight, mean=0, std=embedding_dim ** -0.5)
@@ -216,70 +264,3 @@ def Linear(in_features, out_features, bias=True):
     if bias:
         nn.init.constant_(m.bias, 0.0)
     return m
-
-
-def freeze_model(model):
-    """Freeze all parameters in a model."""
-    for param in model.parameters():
-        param.requires_grad = False
-
-
-def load_model(filename, arg_overrides: Optional[Dict[str, Any]] = None):
-
-    state = load_checkpoint_to_cpu(filename, arg_overrides)
-
-    if "args" in state and state["args"] is not None:
-        cfg = convert_namespace_to_omegaconf(state["args"])
-    elif "cfg" in state and state["cfg"] is not None:
-        cfg = state["cfg"]
-    
-    model_cfg = cfg.model
-    model_type = getattr(model_cfg, "_name", None) # or getattr(cfg, "arch", None)
-    
-    if model_type == 'wav2vec2':
-        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
-        model = Wav2Vec2Model.build_model(model_cfg)
-    elif model_type == 'wav2vec_ctc':
-        cfg.task['data'] = './' # Set path where dict exists
-        task = AudioFinetuningTask.setup_task(cfg.task)
-        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
-        model = Wav2VecCtc.build_model(model_cfg, task)
-    
-    model = quantization_utils.quantize_model_scalar(model, cfg)
-
-    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
-
-    return model
-
-
-def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = None):
-
-    state = load_checkpoint_to_cpu(filename, arg_overrides)
-
-    if "args" in state and state["args"] is not None:
-        cfg = convert_namespace_to_omegaconf(state["args"])
-    elif "cfg" in state and state["cfg"] is not None:
-        cfg = state["cfg"]
-    
-    model_cfg = cfg.model
-    model_type = getattr(model_cfg, "_name", None) # or getattr(cfg, "arch", None)
-    task_agnostic = None
-
-    if model_type == 'wav2vec2':
-        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
-        model = Wav2Vec2Model.build_model(model_cfg)
-        config = state["cfg"]["model"]
-        task_agnostic = True
-    elif model_type == 'wav2vec_ctc':
-        cfg.task['data'] = './' # Set path where dict exists
-        task = AudioFinetuningTask.setup_task(cfg.task)
-        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
-        model = Wav2VecCtc.build_model(model_cfg, task)
-        config = state["cfg"]["model"]["w2v_args"]["model"]
-        task_agnostic = False
-
-    model = quantization_utils.quantize_model_scalar(model, cfg)
-
-    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
-
-    return model, config, task_agnostic

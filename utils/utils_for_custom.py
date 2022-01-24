@@ -141,16 +141,16 @@ def convert_dict_to_custom_config(cfg):
     config.dropout_features = cfg.dropout_features
     config.final_dim = cfg.final_dim
     config.logit_temp = cfg.logit_temp
-    config.quantize_targets = cfg.quantize_targets
-    config.quantize_input = cfg.quantize_input
-    config.same_quantizer = cfg.same_quantizer
+    # config.quantize_targets = cfg.quantize_targets
+    # config.quantize_input = cfg.quantize_input
+    # config.same_quantizer = cfg.same_quantizer
     config.target_glu = cfg.target_glu
     config.feature_grad_mult = cfg.feature_grad_mult
-    config.quantizer_depth = cfg.quantizer_depth
-    config.quantizer_factor = cfg.quantizer_factor
-    config.latent_vars = cfg.latent_vars
-    config.latent_groups = cfg.latent_groups
-    config.latent_dim = cfg.latent_dim
+    # config.quantizer_depth = cfg.quantizer_depth
+    # config.quantizer_factor = cfg.quantizer_factor
+    # config.latent_vars = cfg.latent_vars
+    # config.latent_groups = cfg.latent_groups
+    # config.latent_dim = cfg.latent_dim
     config.mask_length = cfg.mask_length
     config.mask_prob = cfg.mask_prob
     config.mask_selection = cfg.mask_selection
@@ -159,15 +159,15 @@ def convert_dict_to_custom_config(cfg):
     config.mask_channel_length = cfg.mask_channel_length
     config.mask_min_space = cfg.mask_min_space
     config.mask_channel_prob = cfg.mask_channel_prob
-    config.mask_channel_before = cfg.mask_channel_before
+    # config.mask_channel_before = cfg.mask_channel_before
     config.mask_channel_selection = cfg.mask_channel_selection
     config.mask_channel_other = cfg.mask_channel_other
     config.no_mask_channel_overlap = cfg.no_mask_channel_overlap
     config.mask_channel_min_space = cfg.mask_channel_min_space
-    config.num_negatives = cfg.num_negatives
-    config.negatives_from_everywhere = cfg.negatives_from_everywhere
-    config.cross_sample_negatives = cfg.cross_sample_negatives
-    config.codebook_negatives = cfg.codebook_negatives
+    # config.num_negatives = cfg.num_negatives
+    # config.negatives_from_everywhere = cfg.negatives_from_everywhere
+    # config.cross_sample_negatives = cfg.cross_sample_negatives
+    # config.codebook_negatives = cfg.codebook_negatives
     config.latent_temp = cfg.latent_temp
     
     return config
