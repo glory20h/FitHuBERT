@@ -22,7 +22,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 # CONFIG ------------------------------
 # Teacher model related
-TEACHER_MODEL = 'wav2vec2_vox_960h_new.pt'
+TEACHER_MODEL = 'wav2vec_small.pt'
 INIT_TEACHER_CONV_LAYERS = True
 INIT_TEACHER_ENCODER_LAYERS = True
 N_LAYERS_TO_INIT = 2
@@ -37,10 +37,9 @@ PROJ_HEAD_INTER_DIM = 0
 PROJ_HEAD_FINAL_DIM = 768
 
 # DB for training related 
-DATA_PATH = '../'
-DATA_AMOUNT = "100h"
-# DATA_AMOUNT = "460h"
-# DATA_AMOUNT = "960h"
+DATA_PATH = './data/len_for_bucket/'
+LIBRI_ROOT = '/workspace/LibriSpeech/'
+DATA_SETS = ['train-clean-100']
 
 # Distillation training related
 USE_GT_FOR_CTC = True
@@ -48,16 +47,16 @@ COSINE_LOSS_WEIGHT = 1
 PRED_LAYER_ID = [3, 7, 11]
 NUM_EPOCHS = 100
 GPUS = 2
-BATCH_SIZE = 1
-LEARNING_RATE = 1e-3
-NUM_WARMUP_STEPS_FACTOR = 0.01
-ACCUMULATE_GRAD_BATCHES = 12 # Effective batch size of 24 utterances
+BATCH_SIZE = 4
+LEARNING_RATE = 2e-4
+WARMUP_PROPORTION = 0
+ACCUMULATE_GRAD_BATCHES = 6 # Effective batch size of 24 utterances
 MONITOR_LOSSES = True
 
 # Checkpoint related
-OUTPUT_DIR = './results/'
-# CHECKPOINT = 'last.ckpt'
-CHECKPOINT = None
+OUTPUT_DIR = './results/dummy-w2v2base/'
+CHECKPOINT = 'last.ckpt'
+# CHECKPOINT = None
 
 # Evaluation related
 TEST = False
@@ -91,9 +90,7 @@ class W2V2Distil(LightningModule):
         self.teacher_model, teacher_config, self.task_agnostic = load_model_and_config(TEACHER_MODEL)
         self.teacher_config = convert_dict_to_custom_config(teacher_config)
 
-        # Freeze teacher model
-        for param in self.teacher_model.parameters():
-            param.requires_grad = False
+        freeze_model(self.teacher_model)
 
         # Please define configs newly between student and teacher
         self.student_config = self.teacher_config
@@ -103,71 +100,65 @@ class W2V2Distil(LightningModule):
         self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
         self.student_config.proj_head_inter_dim = PROJ_HEAD_INTER_DIM
         self.student_config.proj_head_final_dim = PROJ_HEAD_FINAL_DIM
-        self.student_config.final_dropout = 0.0
-        self.student_config.targ_d = 32
 
         # Model Initialize -> Distillation training -> Add FC/Dropout & Fine-tuning
         # self.student_model = CustomWav2Vec2Model(self.student_config)
         self.student_model = CustomStudentModel(self.student_config, self.task_agnostic, PRED_LAYER_ID)
 
-        '''
-        if task_agnostic:
-            self.student_model = CustomWav2Vec2Model(self.student_config) 
-        # Distill model & fine-tuned FC both
-        # Use CTC loss or not
-        else:
-            tmp_cfg = CustomWav2Vec2EncoderConfig()
-            tmp_cfg.custom_wav2vec2_model_setting = self.student_model
-            self.student_config = tmp_cfg
-            self.student_encoder = CustomWav2Vec2Encoder(self.student_config)
-            self.student_model = self.student_encoder.custom_model
-        '''
-
         # Copy model parameters of teacher model
         if INIT_TEACHER_CONV_LAYERS:
-            self.student_model.init_teacher_conv_layers(self.teacher_model)
+            self.student_model.init_conv_layers(self.teacher_model)
         if INIT_TEACHER_ENCODER_LAYERS:
-            self.student_model.init_teacher_encoder_layers(self.teacher_model, N_LAYERS_TO_INIT)
+            self.student_model.init_encoder_layers(self.teacher_model, N_LAYERS_TO_INIT)
 
         # download & prepare data
-        self.train_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-100", download=True)
-        if DATA_AMOUNT == "960h":
-            train_data_360 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-360", download=True)
-            train_data_500 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-other-500", download=True)
-            self.train_data = torch.utils.data.ConcatDataset([self.train_data, train_data_360, train_data_500])
-        elif DATA_AMOUNT == "460h":
-            train_data_360 = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "train-clean-360", download=True)
-            self.train_data = torch.utils.data.ConcatDataset([self.train_data, train_data_360])
-        self.eval_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, "dev-clean", download=True)
-        self.test_data = torchaudio.datasets.LIBRISPEECH(DATA_PATH, TEST_SET, download=True)
+        self.train_data = LibriDataset(
+            batch_size=BATCH_SIZE,
+            file_path=DATA_PATH,
+            sets=DATA_SETS,
+            libri_root=LIBRI_ROOT,
+        )
+        self.eval_data = LibriDataset(
+            batch_size=BATCH_SIZE,
+            file_path=DATA_PATH,
+            sets=['dev-clean'],
+            libri_root=LIBRI_ROOT,
+        )
+        self.test_data = torchaudio.datasets.LIBRISPEECH('../', TEST_SET, download=True)
 
         # For better pytorch lightning logging
         logging.shutdown()
         reload(logging)
 
     def forward(self, batch):
+        wave_input, wave_orig, wave_len, pad_mask = batch
+
+        wav_lengths = torch.LongTensor([len(wav) for wav in wave_orig])
+        wav_padding_mask = ~torch.lt(
+            torch.arange(max(wav_lengths)).unsqueeze(0),
+            wav_lengths.unsqueeze(1),
+        )
+        padded_wav = pad_sequence(wave_orig, batch_first=True)
+
         # Seems like lightning had been using the teacher model as training mode the whole time
         self.teacher_model.eval()
 
-        # Input batch into teacher_model
-        result = self.teacher_model.w2v_encoder.w2v_model.extract_features(
-            source=batch['src'], 
-            # padding_mask=batch['mask'],
-            padding_mask=None,
+        teacher_results = self.teacher_model.extract_features(
+            source=padded_wav, 
+            padding_mask=wav_padding_mask,
             layer=100
         )
+        # -> RETURNS: {
+        #     "x": (B x T x D) (encoder output),
+        #     "padding_mask": (B x T),
+        #     "features": (B x T x D_conv) (CNN output),
+        #     "layer_results": [((T x B x D),(B x T x T))] x 12,
+        # }
 
-        x = result['x'].transpose(0, 1)
-        x = self.teacher_model.w2v_encoder.proj(x)
-
-        teacher_results = {
-            "encoder_out": x,  # T x B x C
-            "padding_mask": result["padding_mask"],  # B x T,
-            "layer_results": result["layer_results"],
-        }
-
-        # Input batch into student_model
-        student_results = self.student_model(batch['src'], padding_mask=None)
+        student_results = self.student_model(
+            src=padded_wav,
+            padding_mask=wav_padding_mask
+        )
         # -> RETURNS: {
         #     "encoder_out": x,  # T x B x C
         #     "padding_mask": result["padding_mask"],  # B x T,
@@ -179,17 +170,48 @@ class W2V2Distil(LightningModule):
         return student_results, teacher_results
 
     def calculate_loss(self, student_results, teacher_results, labels=None):
-        losses = []
-
-        for i, proj in enumerate(student_results['projections']):
-            target = teacher_results['layer_results'][PRED_LAYER_ID[i]][0]
+        teacher_hiddens = [
+            teacher_results["layer_results"][i][0].transpose(0, 1)
+            for i in PRED_LAYER_ID
+        ]
         
-            rec_loss = F.l1_loss(proj, target)
+        teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
+        
+        proj = student_results['projections']
+        target = teacher_hiddens
+        
+        rec_loss = F.l1_loss(proj, target, reduction="none")
+        with torch.no_grad():
+            rec_layer_loss = rec_loss.mean((0, 2, 3))
             
+        rec_loss = rec_loss.mean()
+        
+        if COSINE_LOSS_WEIGHT > 0:
             sim_loss = -F.logsigmoid(F.cosine_similarity(proj, target, dim=-1))
+            with torch.no_grad():
+                sim_layer_loss = sim_loss.mean((0, 2))
             sim_loss = sim_loss.mean()
+        else:
+            sim_loss = 0
+            sim_layer_loss = None
+            
+        total_loss = rec_loss + COSINE_LOSS_WEIGHT * sim_loss
+        
+        losses = torch.add(rec_layer_loss, sim_layer_loss)
+        
+        return total_loss, losses
 
-            losses.append(rec_loss + COSINE_LOSS_WEIGHT * sim_loss)
+        # losses = []
+
+        # for i, proj in enumerate(student_results['projections']):
+        #     target = teacher_results['layer_results'][PRED_LAYER_ID[i]][0]
+        
+        #     rec_loss = F.l1_loss(proj, target)
+            
+        #     sim_loss = -F.logsigmoid(F.cosine_similarity(proj, target, dim=-1))
+        #     sim_loss = sim_loss.mean()
+
+        #     losses.append(rec_loss + COSINE_LOSS_WEIGHT * sim_loss)
 
         if not self.task_agnostic:
             # Process output for CTC loss
@@ -216,20 +238,19 @@ class W2V2Distil(LightningModule):
 
             losses.append(ctc_loss)
 
-        return losses
+        return total_loss, losses
 
     def training_step(self, batch, batch_idx):
         student_results, teacher_results = self(batch)
         
         if not self.task_agnostic:
-            losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
+            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
         else:
-            losses = self.calculate_loss(student_results, teacher_results)
-        loss = sum(losses)
+            loss, losses = self.calculate_loss(student_results, teacher_results)
 
         if MONITOR_LOSSES:
             for i, l in enumerate(losses):
-                self.log(f"loss{i+1}", l, prog_bar=True)
+                self.log(f"loss{i+1}", l.item(), prog_bar=True)
 
         return loss
 
@@ -237,10 +258,9 @@ class W2V2Distil(LightningModule):
         student_results, teacher_results = self(batch)
         
         if not self.task_agnostic:
-            losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
+            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
         else:
-            losses = self.calculate_loss(student_results, teacher_results)
-        loss = sum(losses)
+            loss, losses = self.calculate_loss(student_results, teacher_results)
 
         if not self.task_agnostic:
             predicted_ids = np.argmax(student_results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
@@ -290,12 +310,12 @@ class W2V2Distil(LightningModule):
             self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=LEARNING_RATE)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=LEARNING_RATE)
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
 
         train_batches = len(self.train_dataloader()) // GPUS
         num_training_steps = (NUM_EPOCHS * train_batches) // ACCUMULATE_GRAD_BATCHES
-        num_warmup_steps = int(num_training_steps * NUM_WARMUP_STEPS_FACTOR)
+        num_warmup_steps = int(num_training_steps * WARMUP_PROPORTION)
 
         lr_scheduler = get_scheduler(
             "linear",
@@ -308,18 +328,18 @@ class W2V2Distil(LightningModule):
             "lr_scheduler": lr_scheduler,
             # "lr_scheduler": {
             #     "scheduler": scheduler,
-            #     "monitor": "cer",
+            #     "monitor": "v_loss",
             # },
         }
 
     def train_dataloader(self):
-        return DataLoader(self.train_data, batch_size=self.hparams.batch_size, collate_fn=self.data_collator, num_workers=GPUS*4)
+        return DataLoader(self.train_data, batch_size=1, shuffle=True, collate_fn=self.train_data.collate_fn, num_workers=GPUS*4)
 
     def val_dataloader(self):
-        return DataLoader(self.eval_data, batch_size=self.hparams.batch_size, collate_fn=self.data_collator, num_workers=GPUS*4)
+        return DataLoader(self.eval_data, batch_size=1, collate_fn=self.eval_data.collate_fn, num_workers=GPUS*4)
     
     def test_dataloader(self):
-        return DataLoader(self.test_data, batch_size=self.hparams.batch_size, collate_fn=self.data_collator, num_workers=GPUS*4)
+        return DataLoader(self.test_data, batch_size=1, collate_fn=self.data_collator, num_workers=GPUS*4)
 
     def get_progress_bar_dict(self):
         tqdm_dict = super().get_progress_bar_dict()
@@ -339,12 +359,12 @@ if __name__ == '__main__':
         verbose=True,
         save_last=True,
         save_top_k=3,
-        monitor='cer',
+        monitor='v_loss',
         mode='min'
     )
 
     early_stopping = EarlyStopping(
-        monitor='cer',
+        monitor='v_loss',
         patience=15,
         verbose=True,
         mode='min'
@@ -353,9 +373,9 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=GPUS,
         strategy="ddp",
-        amp_backend="apex",
-        amp_level="O2",
-        # precision=16, -> Does not work for CTC
+        # amp_backend="apex",
+        # amp_level="O2",
+        precision=16,
         max_epochs=NUM_EPOCHS,
         sync_batchnorm=True,
         accumulate_grad_batches=ACCUMULATE_GRAD_BATCHES,

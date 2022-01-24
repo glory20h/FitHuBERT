@@ -26,7 +26,6 @@ from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
 from .ConvFeatureExtractionModel import ConvFeatureExtractionModelConfig, ConvFeatureExtractionModel
 from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayerConfig, TransformerSentenceEncoderLayer
-
 from .StudentTransformerEncoder import StudentTransformerEncoderConfig, StudentTransformerEncoder
 
 MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poisson"])
@@ -464,7 +463,7 @@ class CustomWav2Vec2Model(BaseFairseqModel):
         def _conv_out_length(input_length, kernel_size, stride):
             return torch.floor((input_length - kernel_size) / stride + 1)
 
-        conv_cfg_list = eval(self.cfg.conv_feature_layers)
+        conv_cfg_list = eval(self.cfg.conv_layer_setting.conv_feature_layers)
 
         for i in range(len(conv_cfg_list)):
             input_lengths = _conv_out_length(

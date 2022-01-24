@@ -31,19 +31,19 @@ class CustomStudentModel(nn.Module):
         self.task_agnostic = task_agnostic
 
         # TODO: Use "proper" projection head -> take a look at s3prl
-        # encoder_embed_dim = config.encoder_setting.layer_setting.encoder_embed_dim
-        # n_tasks = len(pred_layer_id)
+        encoder_embed_dim = config.encoder_setting.layer_setting.encoder_embed_dim
+        self.n_tasks = len(pred_layer_id)
 
-        # inter_dim = config.proj_head_inter_dim
-        # inter_dim = inter_dim if inter_dim > 0 else final_emb_size
+        inter_dim = config.proj_head_inter_dim
+        inter_dim = inter_dim if inter_dim > 0 else encoder_embed_dim
         
-        # self.proj_head = nn.Sequential(
-        #     nn.Linear(encoder_embed_dim, inter_dim * n_tasks),
-        #     nn.GELU(),
-        #     SplitLinear(inter_dim, n_tasks, config.proj_head_final_dim),
-        # )
+        self.proj_head = nn.Sequential(
+            nn.Linear(encoder_embed_dim, inter_dim * self.n_tasks),
+            nn.GELU(),
+            SplitLinear(inter_dim, self.n_tasks, config.proj_head_final_dim),
+        )
 
-        self.proj_heads = [ProjectionHead(config.encoder_setting.layer_setting.encoder_embed_dim) for _ in pred_layer_id]
+        # self.proj_heads = [ProjectionHead(config.encoder_setting.layer_setting.encoder_embed_dim) for _ in pred_layer_id]
 
         if not self.task_agnostic:
             self.final_dropout = nn.Dropout(config.final_dropout)
@@ -60,9 +60,18 @@ class CustomStudentModel(nn.Module):
             x = result['x']
 
         # Get output from projection heads
-        projections = [proj_head(result['layer_results'][-1][0]) for proj_head in self.proj_heads]
+        # projections = [proj_head(result['layer_results'][-1][0]) for proj_head in self.proj_heads]
 
         # TODO: get output from 'proper' projection head used in distilhubert
+        b_sz, t_sz, _ = x.shape
+        n_sz = 1
+        pred = self.proj_head(x).reshape(b_sz, n_sz, t_sz, -1)
+        projections = (
+            pred.squeeze(1)
+            .reshape(b_sz, t_sz, self.n_tasks, -1)
+            .permute(0, 2, 1, 3)
+        )
+        # B x N x T x D
         
         return {
             "encoder_out": x,  # T x B x C
@@ -72,19 +81,31 @@ class CustomStudentModel(nn.Module):
             "projections": projections
         }
 
-    def init_teacher_conv_layers(self, teacher_model):
-        # TODO : Adapt code for cases where it's not task-agnostic
-        self.student_model.feature_extractor.load_state_dict(teacher_model.w2v_encoder.w2v_model.feature_extractor.state_dict())
-        self.student_model.post_extract_proj.load_state_dict(teacher_model.w2v_encoder.w2v_model.post_extract_proj.state_dict())
+    def init_conv_layers(self, teacher_model):
+        if not self.task_agnostic:
+            teacher_model = teacher_model.w2v_encoder.w2v_model
 
-    def init_teacher_encoder_layers(self, teacher_model, n_layers):
-        # TODO : Adapt code for cases where it's not task-agnostic
-        self.student_model.encoder.pos_conv.load_state_dict(teacher_model.w2v_encoder.w2v_model.encoder.pos_conv.state_dict())
+        self.student_model.feature_extractor.load_state_dict(
+            teacher_model.feature_extractor.state_dict()
+        )
+        self.student_model.post_extract_proj.load_state_dict(
+            teacher_model.post_extract_proj.state_dict()
+        )
+
+    def init_encoder_layers(self, teacher_model, n_layers):
+        if not self.task_agnostic:
+            teacher_model = teacher_model.w2v_encoder.w2v_model
+
+        self.student_model.encoder.pos_conv.load_state_dict(
+            teacher_model.encoder.pos_conv.state_dict()
+        )
 
         assert n_layers <= self.config.encoder_setting.encoder_layers
 
         for i in range(n_layers):
-            self.student_model.encoder.layers[i].load_state_dict(teacher_model.w2v_encoder.w2v_model.encoder.layers[i].state_dict())
+            self.student_model.encoder.layers[i].load_state_dict(
+                teacher_model.encoder.layers[i].state_dict()
+            )
 
 
 class ProjectionHead(nn.Module):
@@ -195,6 +216,12 @@ def Linear(in_features, out_features, bias=True):
     if bias:
         nn.init.constant_(m.bias, 0.0)
     return m
+
+
+def freeze_model(model):
+    """Freeze all parameters in a model."""
+    for param in model.parameters():
+        param.requires_grad = False
 
 
 def load_model(filename, arg_overrides: Optional[Dict[str, Any]] = None):
