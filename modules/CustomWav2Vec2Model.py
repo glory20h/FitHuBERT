@@ -19,6 +19,7 @@ from fairseq.modules import (
     TransposeLast,
 )
 
+from utils.utils import SplitLinear
 from fairseq.models import BaseFairseqModel, register_model
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.data.data_utils import compute_mask_indices
@@ -26,6 +27,7 @@ from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
 from .ConvFeatureExtractionModel import ConvFeatureExtractionModelConfig, ConvFeatureExtractionModel
 from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayerConfig, TransformerSentenceEncoderLayer
+
 from .StudentTransformerEncoder import StudentTransformerEncoderConfig, StudentTransformerEncoder
 
 MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poisson"])
@@ -43,6 +45,49 @@ class CustomWav2Vec2Config(FairseqDataclass):
         metadata={"help": "Default setting of TransformerEncoderConfig"}
     )
     
+    # Teacher model initialization related
+    init_conv_layers: bool = field(
+        default=False,
+        metadata={"help": "Whether initialize conv layer of teacher model or not"}
+    )
+
+    init_encoder_layers: int = field(
+        default=0,
+        metadata={"help": "# of layer to initialize encoder layer of teacher model."
+                          "For non-positive integer, recognize as False"}
+    )
+
+    teacher_task_agnostic: bool = field(
+        default=True,
+        metadata={"help": "Whether teacher model is task-agnostic or not"}
+    )
+
+    final_dropout: float = field(
+        default=0.0,
+        metadata={"help": "dropout to apply to the additional layers of downstream task"},
+    )
+
+    targ_d: int = field(
+        default=32,
+        metadata={"help": "Final dimension related to downstream task"}        
+    )
+
+    # Prediction head related
+    pred_head_inter_dim: int = field(
+        default=0,
+        metadata={"help": "Intermediate dimension of prediction head"}
+    )
+
+    pred_head_final_dim: int = field(
+        default=768,
+        metadata={"help": "Final output dimension of prediction head"}
+    )
+
+    pred_layer_id: str = field(
+        default="[3, 7, 11]",
+        metadata={"help": "Layer index to predict by prediction heads"}
+    )
+
     dropout_input: float = field(
         default=0.0,
         metadata={"help": "dropout to apply to the input (after feat extr)"},
@@ -180,7 +225,9 @@ class CustomWav2Vec2Config(FairseqDataclass):
     )
 
 class CustomWav2Vec2Model(BaseFairseqModel):
-    def __init__(self, cfg: CustomWav2Vec2Config):
+    def __init__(self,
+                 cfg: CustomWav2Vec2Config,
+                 teacher_model = None):
         super().__init__()
         self.cfg = cfg
         
@@ -192,16 +239,38 @@ class CustomWav2Vec2Model(BaseFairseqModel):
         feature_enc_layers = eval(feature_extractor_cfg.conv_feature_layers)
         self.feature_extractor_output_embed = feature_enc_layers[-1][0]
 
-        transformer_encoder_cfg = cfg.encoder_setting
-        transformer_encoder_layer_cfg = transformer_encoder_cfg.layer_setting
-        
+        self.transformer_encoder_cfg = cfg.encoder_setting
+        transformer_encoder_layer_cfg = self.transformer_encoder_cfg.layer_setting
+        encoder_embed_dim = transformer_encoder_layer_cfg.encoder_embed_dim
         self.post_extract_proj = (
-            nn.Linear(self.feature_extractor_output_embed,
-                      transformer_encoder_layer_cfg.encoder_embed_dim)
-            if (self.feature_extractor_output_embed !=
-                transformer_encoder_layer_cfg.encoder_embed_dim
+            nn.Linear(self.feature_extractor_output_embed, encoder_embed_dim)
+            if (self.feature_extractor_output_embed != encoder_embed_dim
                 and not cfg.quantize_input)
             else None
+        )
+
+        self.encoder = StudentTransformerEncoder(self.transformer_encoder_cfg) 
+        self.layer_norm = LayerNorm(self.feature_extractor_output_embed)
+
+        self.init_conv_layers = cfg.init_conv_layers
+        self.init_encoder_layers = cfg.init_encoder_layers
+        self.teacher_task_agnostic = cfg.teacher_task_agnostic
+        
+        if self.init_conv_layers:
+            self.init_from_teacher_conv(teacher_model)
+        if self.init_encoder_layers >= 1:
+            self.init_from_teacher_enc(teacher_model, self.init_encoder_layers)
+
+        inter_dim = cfg.pred_head_inter_dim
+        self.pred_head_inter_dim = inter_dim if inter_dim > 0 else encoder_embed_dim
+        self.pred_head_final_dim = cfg.pred_head_final_dim
+        self.pred_layer_id = eval(cfg.pred_layer_id)
+        self.n_tasks = len(self.pred_layer_id)
+
+        self.proj_head = nn.Sequential(
+            nn.Linear(encoder_embed_dim, self.pred_head_inter_dim * self.n_tasks),
+            nn.GELU(),
+            SplitLinear(self.pred_head_inter_dim, self.n_tasks, cfg.proj_head_final_dim),
         )
 
         self.mask_prob = cfg.mask_prob
@@ -235,8 +304,7 @@ class CustomWav2Vec2Model(BaseFairseqModel):
         self.logit_temp = cfg.logit_temp
 
         final_dim = (cfg.final_dim
-        if cfg.final_dim > 0
-        else transformer_encoder_layer_cfg.encoder_embed_dim)
+        if cfg.final_dim > 0 else encoder_embed_dim)
 
         if cfg.quantize_targets:
             vq_dim = (cfg.latent_dim
@@ -263,8 +331,7 @@ class CustomWav2Vec2Model(BaseFairseqModel):
                 self.input_quantizer = self.quantizer
             else:
                 vq_dim = (cfg.latent_dim
-                if cfg.latent_dim > 0
-                else transformer_encoder_layer_cfg.encoder_embed_dim)
+                if cfg.latent_dim > 0 else encoder_embed_dim)
                 self.input_quantizer = GumbelVectorQuantizer(
                     dim=self.feature_extractor_output_embed,
                     num_vars=cfg.latent_vars,
@@ -276,15 +343,11 @@ class CustomWav2Vec2Model(BaseFairseqModel):
                     weight_proj_depth=cfg.quantizer_depth,
                     weight_proj_factor=cfg.quantizer_factor,
                     )
-            self.project_inp = nn.Linear(vq_dim,
-                                         transformer_encoder_layer_cfg.encoder_embed_dim)
+            self.project_inp = nn.Linear(vq_dim, encoder_embed_dim)
 
         self.mask_emb = nn.Parameter(
-            torch.FloatTensor(transformer_encoder_layer_cfg.encoder_embed_dim).uniform_()
+            torch.FloatTensor(encoder_embed_dim).uniform_()
             )
-
-        self.encoder = StudentTransformerEncoder(transformer_encoder_cfg) 
-        self.layer_norm = LayerNorm(self.feature_extractor_output_embed)
 
         self.target_glu = None
         if cfg.target_glu:
@@ -292,8 +355,12 @@ class CustomWav2Vec2Model(BaseFairseqModel):
                 nn.Linear(final_dim, final_dim * 2), nn.GLU()
                 )
 
-        self.final_proj = nn.Linear(transformer_encoder_layer_cfg.encoder_embed_dim,
-                                    final_dim)
+        self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
+
+        if not self.teacher_task_agnostic:
+            self.final_dropout = nn.Dropout(cfg.final_dropout)
+            self.final_proj = Linear(encoder_embed_dim, cfg.targ_d)
+
 
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)
@@ -562,13 +629,41 @@ class CustomWav2Vec2Model(BaseFairseqModel):
         x, layer_results, tr_layer_results = self.encoder(x, padding_mask=padding_mask, layer=layer)
 
         if features_only:
-            return {
+            result = {
                 "x": x,
                 "padding_mask": padding_mask,
                 "features": unmasked_features,
                 "layer_results": layer_results,
                 "tr_layer_results": tr_layer_results,
             }
+
+            if not self.teacher_task_agnostic:
+                x = result['x'].transpose(0, 1)
+                x = self.final_dropout(x)
+                x = self.final_proj(x)
+            else:
+                x = result['x']         
+                  
+            # Get output from projection heads
+            b_sz, t_sz, _ = x.shape
+            n_sz = 1
+            pred = self.proj_head(x).reshape(b_sz, n_sz, t_sz, -1)
+            projections = (
+                pred.squeeze(1)
+                .reshape(b_sz, t_sz, self.n_tasks, -1)
+                .permute(0, 2, 1, 3)
+            )
+            # B x N x T x D
+
+            return {
+                "encoder_out": x,  # T x B x C
+                "padding_mask": result["padding_mask"],  # B x T,
+                "layer_results": result["layer_results"],
+                "tr_layer_results": result["tr_layer_results"],
+                "projections": projections
+            }
+
+            
 
         if self.quantizer:
             q = self.quantizer(y, produce_targets=False)
@@ -648,7 +743,31 @@ class CustomWav2Vec2Model(BaseFairseqModel):
             result["num_vars"] = num_vars
             result["temp"] = curr_temp
 
-        return result
+        if not self.teacher_task_agnostic:
+            x = result['x'].transpose(0, 1)
+            x = self.final_dropout(x)
+            x = self.final_proj(x)
+        else:
+            x = result['x']         
+              
+        # Get output from projection heads
+        b_sz, t_sz, _ = x.shape
+        n_sz = 1
+        pred = self.proj_head(x).reshape(b_sz, n_sz, t_sz, -1)
+        projections = (
+            pred.squeeze(1)
+            .reshape(b_sz, t_sz, self.n_tasks, -1)
+            .permute(0, 2, 1, 3)
+        )
+        # B x N x T x D
+
+        return {
+            "encoder_out": x,  # T x B x C
+            "padding_mask": result["padding_mask"],  # B x T,
+            "layer_results": result["layer_results"],
+            "tr_layer_results": result["tr_layer_results"],
+            "projections": projections
+        }
 
     def quantize(self, x):
         assert self.quantizer is not None
@@ -686,6 +805,35 @@ class CustomWav2Vec2Model(BaseFairseqModel):
             pen.append(net_output["features_pen"])
 
         return pen
+
+
+    def init_from_teacher_conv(self, teacher_model):
+        if not self.teacher_task_agnostic:
+            teacher_model = teacher_model.w2v_encoder.w2v_model
+
+        self.feature_extractor.load_state_dict(
+            teacher_model.feature_extractor.state_dict()
+        )
+        self.post_extract_proj.load_state_dict(
+            teacher_model.post_extract_proj.state_dict()
+        )
+
+
+    def init_from_teacher_enc(self, teacher_model, n_layers):
+        assert n_layers <= self.transformer_encoder_cfg.encoder_layers
+
+        if not self.teacher_task_agnostic:
+            teacher_model = teacher_model.w2v_encoder.w2v_model
+
+        self.encoder.pos_conv.load_state_dict(
+            teacher_model.encoder.pos_conv.state_dict()
+        )
+
+        for i in range(n_layers):
+            self.encoder.layers[i].load_state_dict(
+                teacher_model.encoder.layers[i].state_dict()
+            )
+
 
     def remove_pretraining_modules(self):
         self.quantizer = None

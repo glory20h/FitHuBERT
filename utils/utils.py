@@ -1,6 +1,9 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
+import torchaudio
 import math
 
 from itertools import groupby
@@ -12,116 +15,15 @@ from argparse import Namespace
 import contextlib
 import copy
 
-from torch.nn.utils.rnn import pad_sequence
-from fairseq import tasks
-from fairseq import quantization_utils
-from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
+from fairseq.data import Dictionary
 from fairseq.checkpoint_utils import load_checkpoint_to_cpu
+from fairseq.tasks.audio_pretraining import AudioPretrainingTask
 from fairseq.tasks.audio_finetuning import AudioFinetuningTask
+from fairseq import models, quantization_utils
+from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
+
 from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
 from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
-from fairseq.models.hubert.hubert import HubertModel, HubertConfig
-from omegaconf.omegaconf import open_dict
-
-from modules.CustomWav2Vec2Model import CustomWav2Vec2Model
-
-# Alternative for Wav2VecEncoder
-class CustomStudentModel(nn.Module):
-    def __init__(self, config, task_agnostic=True, pred_layer_id=[-1]):
-        super(CustomStudentModel, self).__init__()
-        self.config = config
-        self.student_model = CustomWav2Vec2Model(config)
-        self.task_agnostic = task_agnostic
-
-        # TODO: Use "proper" projection head -> take a look at s3prl
-        encoder_embed_dim = config.encoder_setting.layer_setting.encoder_embed_dim
-        self.n_tasks = len(pred_layer_id)
-
-        inter_dim = config.proj_head_inter_dim
-        inter_dim = inter_dim if inter_dim > 0 else encoder_embed_dim
-        
-        self.proj_head = nn.Sequential(
-            nn.Linear(encoder_embed_dim, inter_dim * self.n_tasks),
-            nn.GELU(),
-            SplitLinear(inter_dim, self.n_tasks, config.proj_head_final_dim),
-        )
-
-        # self.proj_heads = [ProjectionHead(config.encoder_setting.layer_setting.encoder_embed_dim) for _ in pred_layer_id]
-
-        if not self.task_agnostic:
-            self.final_dropout = nn.Dropout(config.final_dropout)
-            self.final_proj = Linear(config.encoder_setting.layer_setting.encoder_embed_dim, config.targ_d)
-        
-    def forward(self, src, padding_mask=None, layer=100):
-        result = self.student_model.extract_features(source=src, padding_mask=padding_mask, layer=layer)
-
-        if not self.task_agnostic:
-            x = result['x'].transpose(0, 1)
-            x = self.final_dropout(x)
-            x = self.final_proj(x)
-        else:
-            x = result['x']
-
-        # Get output from projection heads
-        # projections = [proj_head(result['layer_results'][-1][0]) for proj_head in self.proj_heads]
-
-        # TODO: get output from 'proper' projection head used in distilhubert
-        b_sz, t_sz, _ = x.shape
-        n_sz = 1
-        pred = self.proj_head(x).reshape(b_sz, n_sz, t_sz, -1)
-        projections = (
-            pred.squeeze(1)
-            .reshape(b_sz, t_sz, self.n_tasks, -1)
-            .permute(0, 2, 1, 3)
-        )
-        # B x N x T x D
-        
-        return {
-            "encoder_out": x,  # T x B x C
-            "padding_mask": result["padding_mask"],  # B x T,
-            "layer_results": result["layer_results"],
-            "tr_layer_results": result["tr_layer_results"],
-            "projections": projections
-        }
-
-    def init_conv_layers(self, teacher_model):
-        if not self.task_agnostic:
-            teacher_model = teacher_model.w2v_encoder.w2v_model
-
-        self.student_model.feature_extractor.load_state_dict(
-            teacher_model.feature_extractor.state_dict()
-        )
-        self.student_model.post_extract_proj.load_state_dict(
-            teacher_model.post_extract_proj.state_dict()
-        )
-
-    def init_encoder_layers(self, teacher_model, n_layers):
-        if not self.task_agnostic:
-            teacher_model = teacher_model.w2v_encoder.w2v_model
-
-        self.student_model.encoder.pos_conv.load_state_dict(
-            teacher_model.encoder.pos_conv.state_dict()
-        )
-
-        assert n_layers <= self.config.encoder_setting.encoder_layers
-
-        for i in range(n_layers):
-            self.student_model.encoder.layers[i].load_state_dict(
-                teacher_model.encoder.layers[i].state_dict()
-            )
-
-
-class ProjectionHead(nn.Module):
-    def __init__(self, embedding_dim):
-        super(ProjectionHead, self).__init__()
-        self.layer = nn.Sequential(
-                        nn.Linear(embedding_dim, embedding_dim),
-                        nn.GELU(),
-                        nn.Linear(embedding_dim, embedding_dim),
-                    )
-        
-    def forward(self, x):
-        return self.layer(x)
 
 
 class SplitLinear(nn.Module):
@@ -161,19 +63,16 @@ class SplitLinear(nn.Module):
             return out.reshape(x.shape[0], x.shape[1], -1) # -> B x T x NDout ?
 
 
+
 class DataCollatorWithPadding:
     def __call__(self, features: List[Dict[str, Any]]):
+        # split inputs and labels since they have to be of different lengths and need
+        # different padding methods
         input_features = [feature[0][0] for feature in features]
-        input_features_lens = [len(x) for x in input_features]
-        input_features_lens = torch.LongTensor(input_features_lens)
-        src = pad_sequence(input_features, batch_first=True, padding_value=0)
-
-        mask = torch.zeros(src.shape)
-        # replace one for padding
-        for idx in range(src.shape[0]):
-            mask[idx, input_features_lens[idx]:] = 1
-
         labels = [feature[2] for feature in features]
+        
+        src = pad_sequence(input_features, batch_first=True, padding_value=0)
+        mask = torch.zeros(src.shape).masked_fill_(src==0, 1)
         
         return {'src': src, 'mask': mask, 'labels': labels}
 
@@ -193,7 +92,7 @@ class Decoder:
         fused_tokens = [tok[0] for tok in groupby(converted_tokens)]
         output = ' '.join(''.join(''.join(fused_tokens).split("<s>")).split("|")).rstrip()
         return output
- 
+
 
 class CTCSequenceConverter:
     def __init__(self, return_type="pt"):
@@ -204,51 +103,6 @@ class CTCSequenceConverter:
             return torch.tensor([tok[0] for tok in groupby(ids) if tok[0] != 0])
         
         return [tok[0] for tok in groupby(ids) if tok[0] != 0]
-
-
-def load_model(filename, return_config=True, arg_overrides: Optional[Dict[str, Any]] = None):
-    """Load a fairseq model with checkpoint."""
-    state = load_checkpoint_to_cpu(filename, arg_overrides)
-
-    if "args" in state and state["args"] is not None:
-        cfg = convert_namespace_to_omegaconf(state["args"])
-    elif "cfg" in state and state["cfg"] is not None:
-        cfg = state["cfg"]
-    
-    model_cfg = cfg.model
-    model_type = getattr(model_cfg, "_name", None)
-    task_agnostic = True
-
-    if model_type == 'wav2vec2':
-        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
-        model = Wav2Vec2Model.build_model(model_cfg)
-    elif model_type == 'wav2vec_ctc':
-        cfg.task['data'] = './' # Set path where dict exists
-        task = AudioFinetuningTask.setup_task(cfg.task)
-        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
-        model = Wav2VecCtc.build_model(model_cfg, task)
-        task_agnostic = False
-    elif model_type == "hubert":
-        task = tasks.setup_task(cfg.task)
-        task.load_state_dict(state["task_state"])
-        model_cfg = merge_with_parent(HubertConfig(), model_cfg)
-        # Update needed due to a bug in latest version of fairseq
-        with open_dict(model_cfg):
-            model_cfg.required_seq_len_multiple = 1
-        model = HubertModel.build_model(model_cfg, task)
-    else:
-        raise NotImplementedError(f"model '{model_type}' is not supported.")
-
-    model = quantization_utils.quantize_model_scalar(model, cfg)
-    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
-
-    return model, model_cfg, task_agnostic
-
-
-def freeze_model(model):
-    """Freeze all parameters in a model."""
-    for param in model.parameters():
-        param.requires_grad = False
 
 
 def Embedding(num_embeddings, embedding_dim, padding_idx):
@@ -264,3 +118,49 @@ def Linear(in_features, out_features, bias=True):
     if bias:
         nn.init.constant_(m.bias, 0.0)
     return m
+
+
+def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = None):
+
+    state = load_checkpoint_to_cpu(filename, arg_overrides)
+
+    if "args" in state and state["args"] is not None:
+        cfg = convert_namespace_to_omegaconf(state["args"])
+    elif "cfg" in state and state["cfg"] is not None:
+        cfg = state["cfg"]
+    
+    model_cfg = cfg.model
+    model_type = getattr(model_cfg, "_name", None) # or getattr(cfg, "arch", None)
+    task_agnostic = None
+
+    if model_type == 'wav2vec2':
+        model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
+        model = Wav2Vec2Model.build_model(model_cfg)
+        task_agnostic = True
+    elif model_type == 'wav2vec_ctc':
+        cfg.task['data'] = './' # Set path where dict exists
+        task = AudioFinetuningTask.setup_task(cfg.task)
+        model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
+        model = Wav2VecCtc.build_model(model_cfg, task)
+        task_agnostic = False
+    elif model_type == "hubert":
+        task = tasks.setup_task(cfg.task)
+        task.load_state_dict(state["task_state"])
+        model_cfg = merge_with_parent(HubertConfig(), model_cfg)
+        # Update needed due to a bug in latest version of fairseq
+        with open_dict(model_cfg):
+            model_cfg.required_seq_len_multiple = 1
+        model = HubertModel.build_model(model_cfg, task)
+        task_agnostic = True
+    else:
+        raise NotImplementedError(f"model '{model_type}' is not supported.")
+
+    model = quantization_utils.quantize_model_scalar(model, cfg)
+    model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
+
+    return model, model_cfg, task_agnostic
+
+def freeze_model(model):
+    """Freeze all parameters in a model."""
+    for param in model.parameters():
+        param.requires_grad = False

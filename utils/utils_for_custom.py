@@ -171,3 +171,6 @@ def convert_dict_to_custom_config(cfg):
     config.latent_temp = cfg.latent_temp
     
     return config
+
+## add custom config -> yaml function
+## CustomWav2Vec
