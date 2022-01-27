@@ -9,10 +9,8 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_metric
 from transformers import get_scheduler
 
-from utils.utils import *
-from utils.utils_for_custom import *
-from utils.dataset import *
-from modules.CustomWav2Vec2Model import CustomWav2Vec2Config, CustomWav2Vec2Model
+from utils import *
+from modules.model import CustomStudentModelConfig, CustomStudentModel
 
 from importlib import reload
 logging.shutdown()
@@ -24,7 +22,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 # CONFIG ------------------------------
 # Teacher model related
-TEACHER_MODEL = '../parameters/w2v2/wav2vec_small.pt'
+TEACHER_MODEL = 'wav2vec_small.pt'
 
 # Student model related
 STUDENT_ENCODER_LAYERS = 2
@@ -37,30 +35,27 @@ PROJ_HEAD_FINAL_DIM = 768
 
 # Agnostic distillation related
 INIT_TEACHER_CONV_LAYERS = True
-#INIT_TEACHER_ENCODER_LAYERS = True
-N_INIT_ENCODER_LAYERS = 2
-#COPY_PARAMETERS = True
+INIT_TEACHER_ENCODER_LAYERS = 2
 
 # Distillation training related
 PRED_LAYER_ID = "[3, 7, 11]"
-NUM_EPOCHS = 100
+NUM_EPOCHS = 150
 COSINE_LOSS_WEIGHT = 1
 GPUS = 2
 BATCH_SIZE = 4
-LEARNING_RATE = 2e-4
-WARMUP_PROPORTION = 0
+LEARNING_RATE = 1e-3
+WARMUP_PROPORTION = 0.01
 ACCUMULATE_GRAD_BATCHES = 6 # Effective batch size of 24 utterances
 MONITOR_LOSSES = True
 USE_GT_FOR_CTC = True
 
 # DB for training related 
 DATA_PATH = './data/len_for_bucket'
-LIBRI_ROOT = '../data/LibriSpeech/'
+LIBRI_ROOT = '../LibriSpeech/'
 DATA_SETS = ['train-clean-100']
-#DATA_AMOUNT = "100h"
 
 # Checkpoint related
-OUTPUT_DIR = './results/'
+OUTPUT_DIR = 'new_model_test'
 #CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 
@@ -94,17 +89,23 @@ class W2V2Distil(LightningModule):
             "'": 27, "X": 28, "J": 29, "Q": 30, "Z": 31}
 
         self.teacher_model, teacher_config, self.task_agnostic = load_model_and_config(TEACHER_MODEL)
-        self.teacher_config = convert_dict_to_custom_config(teacher_config)
-
+        self.teacher_model.encoder.layerdrop = 0
         freeze_model(self.teacher_model)
 
         # Assign more configs about student model compares to teacher model
-        self.student_config = self.teacher_config        
-        self.set_student_config()
+        student_config = CustomStudentModelConfig()
+        target_keys = student_config._get_all_attributes()
+        for k in teacher_config.keys():
+            if k in target_keys:
+                setattr(student_config, k, getattr(teacher_config, k))
+        self.student_config = student_config       
+        self.update_student_config()
 
         # Model Initialize -> Distillation training -> Add FC/Dropout & Fine-tuning
-        self.student_model = CustomWav2Vec2Model(cfg = self.student_config,
-                                                 teacher_model = self.teacher_model)
+        self.student_model = CustomStudentModel(
+            cfg=self.student_config,
+            teacher_model=self.teacher_model
+        )
 
         # download & prepare data
         self.train_data = LibriDataset(
@@ -119,7 +120,12 @@ class W2V2Distil(LightningModule):
             sets=['dev-clean'],
             libri_root=LIBRI_ROOT,
         )
-        self.test_data = torchaudio.datasets.LIBRISPEECH('../data', TEST_SET, download=True)
+        self.test_data = LibriDataset(
+            batch_size=BATCH_SIZE,
+            file_path=DATA_PATH,
+            sets=[TEST_SET],
+            libri_root=LIBRI_ROOT,
+        )
 
         # For better pytorch lightning logging
         logging.shutdown()
@@ -151,17 +157,16 @@ class W2V2Distil(LightningModule):
         #     "layer_results": [((T x B x D),(B x T x T))] x 12,
         # }
 
-        student_results = self.student_model.extract_features(
+        student_results = self.student_model(
             source=padded_wav, 
             padding_mask=wav_padding_mask,
-            mask=False,
-            layer=100
         )
         # -> RETURNS: {
-        #     "encoder_out": x,  # T x B x C
-        #     "padding_mask": result["padding_mask"],  # B x T,
-        #     "layer_results": result["layer_results"],
-        #     "tr_layer_results": result["tr_layer_results"],
+        #     "x": x,
+        #     "padding_mask": padding_mask,
+        #     "features": features,
+        #     "layer_results": layer_results,
+        #     "tr_layer_results": tr_layer_results,
         #     "projections": projections
         # }
 
@@ -202,7 +207,7 @@ class W2V2Distil(LightningModule):
 
         if not self.task_agnostic:
             # Process output for CTC loss
-            ctc_input = student_results['encoder_out'].log_softmax(2) # -> Revise this
+            ctc_input = student_results['x'].log_softmax(2) # -> Revise this
 
             if USE_GT_FOR_CTC:
                 # Use Ground Truth labels instead of labels from the teacher model
@@ -227,19 +232,18 @@ class W2V2Distil(LightningModule):
 
         return total_loss, losses
 
-
-    def set_student_config(self):
+    def update_student_config(self):
         # Set student w2v model configs before distillation
 
-        # Model spec realted
-        self.student_config.encoder_setting.encoder_layers = STUDENT_ENCODER_LAYERS
-        self.student_config.encoder_setting.able_tr_layer = ENABLE_TR_LAYER
-        self.student_config.encoder_setting.type_of_tr_layer = TR_TYPE
-        self.student_config.encoder_setting.tr_layer_floor = TR_LAYER_FLOOR
+        # Model spec related
+        self.student_config.encoder_layers = STUDENT_ENCODER_LAYERS
+        self.student_config.enable_tr_layer = ENABLE_TR_LAYER
+        self.student_config.type_of_tr_layer = TR_TYPE
+        self.student_config.tr_layer_floor = TR_LAYER_FLOOR
         
         # Initialization related
         self.student_config.init_conv_layers = INIT_TEACHER_CONV_LAYERS
-        self.student_config.init_encoder_layers = N_INIT_ENCODER_LAYERS
+        self.student_config.init_encoder_layers = INIT_TEACHER_ENCODER_LAYERS
 
         # Prediction head related
         self.student_config.proj_head_inter_dim = PROJ_HEAD_INTER_DIM
@@ -362,7 +366,7 @@ if __name__ == '__main__':
         model = W2V2Distil()
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=OUTPUT_DIR,
+        dirpath='./results/'+ OUTPUT_DIR,
         filename='checkpoint-{epoch:02d}',
         verbose=True,
         save_last=True,

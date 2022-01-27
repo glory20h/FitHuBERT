@@ -19,7 +19,6 @@ from fairseq.modules import (
     TransposeLast,
 )
 
-from utils.utils import SplitLinear
 from fairseq.models import BaseFairseqModel, register_model
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.data.data_utils import compute_mask_indices
@@ -29,6 +28,8 @@ from .ConvFeatureExtractionModel import ConvFeatureExtractionModelConfig, ConvFe
 from .TransformerSentenceEncoderLayer import TransformerSentenceEncoderLayerConfig, TransformerSentenceEncoderLayer
 
 from .StudentTransformerEncoder import StudentTransformerEncoderConfig, StudentTransformerEncoder
+
+from .module import SplitLinear
 
 MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poisson"])
 
@@ -45,7 +46,7 @@ class CustomWav2Vec2Config(FairseqDataclass):
         metadata={"help": "Default setting of TransformerEncoderConfig"}
     )
     
-    # Teacher model initialization related
+    # Model Initialization
     init_conv_layers: bool = field(
         default=False,
         metadata={"help": "Whether initialize conv layer of teacher model or not"}

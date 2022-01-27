@@ -15,54 +15,14 @@ from argparse import Namespace
 import contextlib
 import copy
 
-from fairseq.data import Dictionary
-from fairseq.checkpoint_utils import load_checkpoint_to_cpu
-from fairseq.tasks.audio_pretraining import AudioPretrainingTask
-from fairseq.tasks.audio_finetuning import AudioFinetuningTask
-from fairseq import models, quantization_utils
+from fairseq import models, tasks, quantization_utils
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
-
+from fairseq.checkpoint_utils import load_checkpoint_to_cpu
+from fairseq.tasks.audio_finetuning import AudioFinetuningTask
 from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
 from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
-
-
-class SplitLinear(nn.Module):
-    """Split Linear Layer"""
-
-    def __init__(self, in_dim, in_split, out_dim):
-        super().__init__()
-
-        self.in_dim = in_dim  # Din
-        self.in_split = in_split  # N
-        self.out_dim = out_dim  # Dout
-
-        if in_split > 1:
-            weight = torch.zeros((self.in_split, self.in_dim, self.out_dim))
-            self.weight = nn.Parameter(weight, requires_grad=True)
-            nn.init.uniform_(self.weight, -(self.in_dim ** -0.5), self.in_dim ** -0.5)
-
-            bias = torch.zeros((1, 1, self.in_split, self.out_dim))
-            self.bias = nn.Parameter(bias, requires_grad=True)
-            nn.init.uniform_(self.bias, -(self.in_dim ** -0.5), self.in_dim ** -0.5)
-        else:
-            self.layer = nn.Linear(self.in_dim, self.out_dim)
-
-    def forward(self, x:torch.Tensor):
-        # x: shape = B x T x NDin
-
-        if self.in_split == 1:
-            return self.layer(x)
-        else:
-            x = x.reshape(x.shape[0], x.shape[1], self.in_split, 1, self.in_dim)
-            # x: B x T x N x 1 x Din
-
-            out = torch.einsum("...klm,kmn->...kln", x, self.weight).squeeze(3)
-            # out: B x T x N x Dout
-            out = out + self.bias
-
-            return out.reshape(x.shape[0], x.shape[1], -1) # -> B x T x NDout ?
-
-
+from fairseq.models.hubert.hubert import HubertModel, HubertConfig
+from omegaconf.omegaconf import open_dict
 
 class DataCollatorWithPadding:
     def __call__(self, features: List[Dict[str, Any]]):
