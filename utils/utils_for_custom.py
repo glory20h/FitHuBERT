@@ -1,5 +1,6 @@
 from argparse import Namespace
 import contextlib
+import yaml
 import copy
 import math
 import numpy as np
@@ -172,5 +173,19 @@ def convert_dict_to_custom_config(cfg):
     
     return config
 
-## add custom config -> yaml function
-## CustomWav2Vec
+# Make yaml file with given name and config dataclass
+def make_yaml(cfg, name):
+    
+    distiller = dict()
+    config_model = dict()
+    
+    for attr in dir (cfg):
+        if not callable(getattr(cfg, attr)) and not attr.startswith("_"):
+            distiller[attr] = getattr(cfg, attr)
+    
+    config_model['distiller'] =  distiller
+    
+    with open(name + '.yaml', 'w') as f:
+        yaml.dump(yaml_config, f, default_flow_style = False)
+    
+    return config_model
