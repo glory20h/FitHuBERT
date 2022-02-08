@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from dataclasses import dataclass, field
 from omegaconf import MISSING, II, open_dict
 from typing import Any, Optional
+from datetime import datetime
+from pytz import timezone
 
 from fairseq import checkpoint_utils, tasks, utils
 from fairseq.dataclass import FairseqDataclass
@@ -174,18 +176,28 @@ def convert_dict_to_custom_config(cfg):
     return config
 
 # Make yaml file with given name and config dataclass
-def make_yaml(cfg, name):
+def dump_yaml(cfg, yaml_dict):
     
+    # cfg: updated distiller config dataclass (= student_config)
+    # yaml_file: dumping yaml file (= YAML_CFG)
     distiller = dict()
-    config_model = dict()
     
-    for attr in dir (cfg):
+    for attr in dir(cfg):
         if not callable(getattr(cfg, attr)) and not attr.startswith("_"):
             distiller[attr] = getattr(cfg, attr)
+
+    dump_dict = yaml_dict
+
+    for key in distiller:
+        if key in ['activation_fn', 'extractor_mode', 'layer_type']:
+            dump_dict['distiller'][key] = str(distiller[key])
+        else:
+            dump_dict['distiller'][key] = distiller[key]
+
+    # name as current time
+    name = datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d_%Hh%Mm%Ss')
+
+    with open('./data/log/' + name + '.yaml', 'w') as f:
+        yaml.dump(dump_dict, f, sort_keys = False)
     
-    config_model['distiller'] =  distiller
-    
-    with open(name + '.yaml', 'w') as f:
-        yaml.dump(yaml_config, f, default_flow_style = False)
-    
-    return config_model
+    return dump_dict
