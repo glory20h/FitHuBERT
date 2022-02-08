@@ -1,8 +1,5 @@
 import os
 import re
-import time
-from datetime import datetime
-from pytz import timezone
 import yaml
 import argparse
 import logging
@@ -39,51 +36,7 @@ with open(YAML_PATH) as f:
 
 BATCH_SIZE = YAML_CFG['train']['batch_size']
 # -------------------------------------
-'''
-# Teacher model related
-TEACHER_MODEL = '../parameters/w2v2/wav2vec_small.pt'
 
-# Student model related
-STUDENT_ENCODER_LAYERS = 2
-ENABLE_TR_LAYER = False
-TR_LAYER_FLOOR = 1
-TR_TYPE = 'fc2'
-TR_REDUCE_FACTOR = 2
-PROJ_HEAD_INTER_DIM = 0
-PROJ_HEAD_FINAL_DIM = 768
-
-# Agnostic distillation related
-INIT_TEACHER_CONV_LAYERS = True
-INIT_TEACHER_ENCODER_LAYERS = 2
-
-# Distillation training related
-PRED_LAYER_ID = "[3, 7, 11]"
-NUM_EPOCHS = 150
-COSINE_LOSS_WEIGHT = 1
-GPUS = 2
-BATCH_SIZE = 4
-LEARNING_RATE = 1e-3
-WARMUP_PROPORTION = 0.01
-ACCUMULATE_GRAD_BATCHES = 6 # Effective batch size of 24 utterances
-MONITOR_LOSSES = True
-USE_GT_FOR_CTC = True
-
-# DB for training related 
-DATA_PATH = './data/len_for_bucket'
-LIBRI_ROOT = '../LibriSpeech/'
-DATA_SETS = ['train-clean-100']
-
-# Checkpoint related
-OUTPUT_DIR = 'new_model_test'
-#CHECKPOINT = 'last.ckpt'
-CHECKPOINT = None
-
-# Evaluation related
-TEST = False
-TEST_SET = "test-clean"
-# TEST_SET = "test-other"
-# --------------------------------------
-'''
 
 class W2V2Distil(LightningModule):
     def __init__(self,
