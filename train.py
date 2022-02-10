@@ -10,10 +10,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_metric
 from transformers import get_scheduler
+from s3prl.optimizers import get_optimizer
 
-from utils.utils import *
-from utils.dataset import *
-from utils.utils_for_custom import dump_yaml
+from utils import *
 from modules.model import CustomStudentModelConfig, CustomStudentModel
 
 from importlib import reload
@@ -25,29 +24,11 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 
-# CONFIG ------------------------------
-parser = argparse.ArgumentParser()
-parser.add_argument('--config', '-cfg',
-                    required = True,
-                    help= 'config for training')
-YAML_PATH = parser.parse_args().config
-with open(YAML_PATH) as f:
-    YAML_CFG = yaml.load(f, Loader = yaml.FullLoader)
-
-BATCH_SIZE = YAML_CFG['train']['batch_size']
-# -------------------------------------
-
-
 class W2V2Distil(LightningModule):
-    def __init__(self,
-                 yaml_cfg = YAML_CFG,
-                 batch_size = BATCH_SIZE,
-                ):
+    def __init__(self, cfg):
         super().__init__()
 
-        self.yaml_cfg = yaml_cfg
-
-        self.save_hyperparameters()
+        self.yaml_cfg = cfg
 
         self.data_collator = DataCollatorWithPadding()
 
@@ -66,7 +47,6 @@ class W2V2Distil(LightningModule):
         # Load teacher model
         teacher_model = self.yaml_cfg['teacher']['teacher_model']
         self.teacher_model, teacher_config, self.task_agnostic = load_model_and_config(teacher_model)
-        self.teacher_model.encoder.layerdrop = 0
         freeze_model(self.teacher_model)
 
         # Assign more configs about student compares to teacher
@@ -82,73 +62,62 @@ class W2V2Distil(LightningModule):
         distiller_cfg = self.yaml_cfg['distiller']
         self.update_student_config(distiller_cfg)
 
+        # TODO: how to make it save only once?
+        dump_yaml(student_config, self.yaml_cfg)
+
+        # Model Initialize -> Distillation training -> Add FC/Dropout & Fine-tuning
+        self.student_model = CustomStudentModel(
+            cfg=student_config,
+            teacher_model=self.teacher_model
+        )
+
+        self.batch_size = self.yaml_cfg['train']['batch_size']
         data_cfg = self.yaml_cfg['data']
         bucketing_path = data_cfg['bucketing_path']
         libri_root = data_cfg['libri_root']
         train_set = data_cfg['train_set']
-        test_set =data_cfg['test_set']
-
-        # Model Initialize -> Distillation training -> Add FC/Dropout & Fine-tuning
-        self.student_model = CustomStudentModel(
-            cfg=self.student_config,
-            teacher_model=self.teacher_model
-        )
+        test_set = data_cfg['test_set']
 
         # download & prepare data
         self.train_data = LibriDataset(
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             file_path=bucketing_path,
             sets=train_set,
             libri_root=libri_root,
         )
         self.eval_data = LibriDataset(
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             file_path=bucketing_path,
             sets=['dev-clean'],
             libri_root=libri_root,
         )
         self.test_data = LibriDataset(
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             file_path=bucketing_path,
             sets=test_set,
             libri_root=libri_root,
         )
 
-        dump_yaml(self.student_config, self.yaml_cfg)
-
         # For better pytorch lightning logging
         logging.shutdown()
         reload(logging)
 
-    def forward(self, batch):
-        wave_input, wave_orig, wave_len, pad_mask = batch
-
-        wav_lengths = torch.LongTensor([len(wav) for wav in wave_orig])
-        wav_padding_mask = ~torch.lt(
-            torch.arange(max(wav_lengths)).unsqueeze(0),
-            wav_lengths.unsqueeze(1),
-        )
-        padded_wav = pad_sequence(wave_orig, batch_first=True)
-
+    def forward(self, x, padding_mask=None):
         # Seems like lightning had been using the teacher model as training mode the whole time
         self.teacher_model.eval()
 
         teacher_results = self.teacher_model.extract_features(
-            source=padded_wav, 
-            padding_mask=wav_padding_mask,
-            mask = False,
-            layer=100
+            source=x, 
+            padding_mask=padding_mask,
         )
         # -> RETURNS: {
         #     "x": (B x T x D) (encoder output),
-        #     "padding_mask": (B x T),
-        #     "features": (B x T x D_conv) (CNN output),
-        #     "layer_results": [((T x B x D),(B x T x T))] x 12,
+        #     "layer_results": [x, (attn, lr)] x #layers,
         # }
 
         student_results = self.student_model(
-            source=padded_wav, 
-            padding_mask=wav_padding_mask,
+            source=x, 
+            padding_mask=padding_mask,
         )
         # -> RETURNS: {
         #     "x": x,
@@ -161,8 +130,77 @@ class W2V2Distil(LightningModule):
 
         return student_results, teacher_results
 
-    def calculate_loss(self, student_results, teacher_results, labels=None):
+    def training_step(self, batch, batch_idx):
+        student_results, teacher_results = self(**batch)
+        
+        if not self.task_agnostic:
+            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
+        else:
+            loss, losses = self.calculate_loss(student_results, teacher_results)
 
+        if self.yaml_cfg['train']['monitor_losses']:
+            for i, l in enumerate(losses):
+                self.log(f"loss{i+1}", l.item(), prog_bar=True)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        student_results, teacher_results = self(**batch)
+
+        if not self.task_agnostic:
+            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
+        else:
+            loss, losses = self.calculate_loss(student_results, teacher_results)
+
+        if not self.task_agnostic:
+            predicted_ids = np.argmax(student_results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
+            predictions = [self.decoder.decode(ids) for ids in predicted_ids]
+
+            self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
+            self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
+
+        self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+
+        return {"v_loss": loss}
+
+    def validation_epoch_end(self, validation_step_outputs):
+        if not self.task_agnostic:
+            wer = self.wer_metric.compute()
+            cer = self.cer_metric.compute()
+
+            self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+            self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+    
+    def test_step(self, batch, batch_idx):
+        student_results, teacher_results = self(**batch)
+        
+        if not self.task_agnostic:
+            losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
+        else:
+            losses = self.calculate_loss(student_results, teacher_results)
+        loss = sum(losses)
+
+        if not self.task_agnostic:
+            predicted_ids = np.argmax(student_results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
+            predictions = [self.decoder.decode(ids) for ids in predicted_ids]
+
+            wer = self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
+            cer = self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
+
+        self.log("test_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+
+        return {"test_loss": loss}
+
+    def test_epoch_end(self, test_step_outputs):
+        if not self.task_agnostic:
+            wer = self.wer_metric.compute()
+            cer = self.cer_metric.compute()
+
+            self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+            self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
+
+    def calculate_loss(self, student_results, teacher_results, labels=None):
+    
         teacher_hiddens = [
             teacher_results["layer_results"][i][0].transpose(0, 1)
             for i in self.student_model.pred_layer_id
@@ -191,8 +229,6 @@ class W2V2Distil(LightningModule):
         total_loss = rec_loss + self.yaml_cfg['train']['cosine_weight'] * sim_loss
         
         losses = torch.add(rec_layer_loss, sim_layer_loss)
-        
-        return total_loss, losses
 
         if not self.task_agnostic:
             # Process output for CTC loss
@@ -204,7 +240,7 @@ class W2V2Distil(LightningModule):
                 target = torch.cat(gt_tokens)
                 target_lengths = torch.tensor([len(tokens) for tokens in gt_tokens])
             else:
-                logits = teacher_results['encoder_out'].transpose(0,1)
+                logits = teacher_results['x'].transpose(0,1)
                 predicted_ids = torch.argmax(logits, dim=-1)
                 fused_tokens = [self.ctc_converter(ids) for ids in predicted_ids]
                 target = torch.cat(fused_tokens)
@@ -220,6 +256,38 @@ class W2V2Distil(LightningModule):
             losses.append(ctc_loss)
 
         return total_loss, losses
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), lr=eval(self.yaml_cfg['train']['learning_rate']))
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
+
+        train_batches = len(self.train_dataloader()) // self.yaml_cfg['train']['gpus']
+        num_training_steps = (self.yaml_cfg['train']['num_epochs'] * train_batches) // self.yaml_cfg['train']['accumulate_grad_batches']
+        num_warmup_steps = int(num_training_steps * self.yaml_cfg['train']['warmup_ratio'])
+
+        lr_scheduler = get_scheduler(
+            "linear",
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps
+        )
+        return {
+            "optimizer": get_optimizer(
+                [self.student_model],
+                num_training_steps,
+                self.yaml_cfg['optimizer']
+            )
+        }
+        return {
+            "optimizer": optimizer, 
+            "lr_scheduler": lr_scheduler,
+            # "lr_scheduler": {
+            #     "scheduler": scheduler,
+            #     "monitor": "v_loss",
+            # },
+        }
+
+        
 
     def update_student_config(self, cfg: dict):
         # Set student w2v model configs before distillation
@@ -241,99 +309,6 @@ class W2V2Distil(LightningModule):
         self.student_config.pred_layer_id = cfg['pred_layer_id']
         self.student_config.teacher_task_agnostic = self.task_agnostic
 
-
-    def training_step(self, batch, batch_idx):
-        student_results, teacher_results = self(batch)
-        
-        if not self.task_agnostic:
-            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
-        else:
-            loss, losses = self.calculate_loss(student_results, teacher_results)
-
-        if self.yaml_cfg['train']['monitor_losses']:
-            for i, l in enumerate(losses):
-                self.log(f"loss{i+1}", l.item(), prog_bar=True)
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        student_results, teacher_results = self(batch)
-
-        if not self.task_agnostic:
-            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
-        else:
-            loss, losses = self.calculate_loss(student_results, teacher_results)
-
-        if not self.task_agnostic:
-            predicted_ids = np.argmax(student_results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
-            predictions = [self.decoder.decode(ids) for ids in predicted_ids]
-
-            self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
-            self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
-
-        self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-
-        return {"v_loss": loss}
-
-    def validation_epoch_end(self, validation_step_outputs):
-        if not self.task_agnostic:
-            wer = self.wer_metric.compute()
-            cer = self.cer_metric.compute()
-
-            self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-            self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-    
-    def test_step(self, batch, batch_idx):
-        student_results, teacher_results = self(batch)
-        
-        if not self.task_agnostic:
-            losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
-        else:
-            losses = self.calculate_loss(student_results, teacher_results)
-        loss = sum(losses)
-
-        if not self.task_agnostic:
-            predicted_ids = np.argmax(student_results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
-            predictions = [self.decoder.decode(ids) for ids in predicted_ids]
-
-            wer = self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
-            cer = self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
-
-        self.log("test_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-
-        return {"test_loss": loss}
-
-    def test_epoch_end(self, test_step_outputs):
-        if not self.task_agnostic:
-            wer = self.wer_metric.compute()
-            cer = self.cer_metric.compute()
-
-            self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-            self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.hparams.batch_size)
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.yaml_cfg['train']['learning_rate'])
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
-
-        train_batches = len(self.train_dataloader()) // self.yaml_cfg['train']['gpus']
-        num_training_steps = (self.yaml_cfg['train']['num_epochs'] * train_batches) // self.yaml_cfg['train']['accumulate_grad_batches']
-        num_warmup_steps = int(num_training_steps * self.yaml_cfg['train']['warmup_ratio'])
-
-        lr_scheduler = get_scheduler(
-            "linear",
-            optimizer=optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps
-        )
-        return {
-            "optimizer": optimizer, 
-            "lr_scheduler": lr_scheduler,
-            # "lr_scheduler": {
-            #     "scheduler": scheduler,
-            #     "monitor": "v_loss",
-            # },
-        }
-
     def train_dataloader(self):
         return DataLoader(self.train_data,
                           batch_size=1,
@@ -350,7 +325,7 @@ class W2V2Distil(LightningModule):
     def test_dataloader(self):
         return DataLoader(self.test_data,
                           batch_size=1,
-                          collate_fn=self.data_collator,
+                          collate_fn=self.test_data.collate_fn,
                           num_workers=self.yaml_cfg['train']['gpus']*4)
 
     def get_progress_bar_dict(self):
@@ -361,21 +336,34 @@ class W2V2Distil(LightningModule):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
 
-    output_dir = YAML_CFG['data']['output_dir']
+    parser.add_argument('-c', '-cfg', '--config', 
+                        help='yaml config path for training')
+
+    parser.add_argument('-t', '--test',
+                        action='store_true', help='Enable testing mode')
+
+    args = parser.parse_args()
+
+    YAML_PATH = args.config or './data/distiller/ex.yaml'
+    with open(YAML_PATH) as f:
+        YAML_CFG = yaml.load(f, Loader = yaml.FullLoader)
+
+    batch_size = YAML_CFG['train']['batch_size']
+    output_dir = './results/' + YAML_CFG['data']['output_dir']
     checkpoint = YAML_CFG['data']['checkpoint']
     gpus = YAML_CFG['train']['gpus']
     num_epochs = YAML_CFG['train']['num_epochs']
     accumulate_grad_batches = YAML_CFG['train']['accumulate_grad_batches']
-    test = YAML_CFG['train']['test']
+
+    model = W2V2Distil(cfg = YAML_CFG)
 
     if checkpoint:
-        model = W2V2Distil().load_from_checkpoint(output_dir + checkpoint)
-    else:
-        model = W2V2Distil()
+        model = model.load_from_checkpoint(output_dir + checkpoint)
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath='./results/'+ output_dir,
+        dirpath=output_dir,
         filename='checkpoint-{epoch:02d}',
         verbose=True,
         save_last=True,
@@ -395,7 +383,7 @@ if __name__ == '__main__':
         gpus=gpus,
         strategy="ddp",
         amp_backend="apex",
-        amp_level="O2",
+        # amp_level="O2",
         precision=16,
         max_epochs=num_epochs,
         sync_batchnorm=True,
@@ -403,7 +391,7 @@ if __name__ == '__main__':
         callbacks=[early_stopping, checkpoint_callback],
     )
 
-    if test:
+    if args.test:
         trainer.test(model)
     else:
         trainer.fit(model)

@@ -349,15 +349,21 @@ class CustomStudentModel(BaseFairseqModel):
             "projections": projections
         }
 
+    def extract_features(self, source, padding_mask, layer=None):
+        res = self.forward(
+            source, padding_mask, layer=layer
+        )
+        return res
+
     def init_from_teacher_conv(self, teacher_model):
         if not self.teacher_task_agnostic:
-            teacher_model = teacher_model.w2v_encoder.w2v_model
+            teacher_model = teacher_model.model.w2v_encoder.w2v_model
 
         self.feature_extractor.load_state_dict(
-            teacher_model.feature_extractor.state_dict()
+            teacher_model.model.feature_extractor.state_dict()
         )
         self.post_extract_proj.load_state_dict(
-            teacher_model.post_extract_proj.state_dict()
+            teacher_model.model.post_extract_proj.state_dict()
         )
 
 
@@ -365,13 +371,13 @@ class CustomStudentModel(BaseFairseqModel):
         assert n_layers <= self.cfg.encoder_layers
 
         if not self.teacher_task_agnostic:
-            teacher_model = teacher_model.w2v_encoder.w2v_model
+            teacher_model = teacher_model.model.w2v_encoder.w2v_model
 
         self.encoder.pos_conv.load_state_dict(
-            teacher_model.encoder.pos_conv.state_dict()
+            teacher_model.model.encoder.pos_conv.state_dict()
         )
 
         for i in range(n_layers):
             self.encoder.layers[i].load_state_dict(
-                teacher_model.encoder.layers[i].state_dict()
+                teacher_model.model.encoder.layers[i].state_dict()
             )

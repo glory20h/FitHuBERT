@@ -9,7 +9,7 @@ from torch.utils.data.dataset import Dataset
 import torchaudio
 
 class LibriDataset(Dataset):
-    """Librispeech Waveform dataset for Distillation"""
+    """Librispeech Waveform Dataset for Distillation"""
 
     def __init__(
         self,
@@ -54,9 +54,6 @@ class LibriDataset(Dataset):
 
     def collate_fn(self, items):
         items = items[0]
-        assert (
-            len(items) == 4
-        ), "__getitem__ should return (wave_input, wave_orig, wave_len, pad_mask)"
         return items
 
     def _load_feat(self, feat_path):
@@ -65,17 +62,16 @@ class LibriDataset(Dataset):
 
     def __getitem__(self, index):
         # Load acoustic feature and pad
-        x_batch = [self._load_feat(x_file) for x_file in self.X[index]]
-        x_lens = [len(x) for x in x_batch]
-        x_lens = torch.LongTensor(x_lens)
-        x_pad_batch = pad_sequence(x_batch, batch_first=True)
+        wave_orig = [self._load_feat(x_file) for x_file in self.X[index]]
 
-        pad_mask = torch.ones(x_pad_batch.shape) # B x T
-        # zero vectors for padding dimension
-        for idx in range(x_pad_batch.shape[0]):
-            pad_mask[idx, x_lens[idx] :] = 0
+        wav_lengths = torch.LongTensor([len(wav) for wav in wave_orig])
+        wav_padding_mask = ~torch.lt(
+            torch.arange(max(wav_lengths)).unsqueeze(0),
+            wav_lengths.unsqueeze(1),
+        )
+        padded_wav = pad_sequence(wave_orig, batch_first=True)
 
-        return x_pad_batch, x_batch, x_lens, pad_mask
+        return {'x': padded_wav, 'padding_mask': wav_padding_mask}
 
     def __len__(self):
         return len(self.X)

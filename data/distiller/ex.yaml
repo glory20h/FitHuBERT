@@ -1,12 +1,13 @@
 teacher:
-  teacher_model: '../parameters/w2v2/wav2vec_small.pt'
+  teacher_model: 'hubert_base_ls960.pt'
+  # teacher_model: 'wav2vec_small.pt'
 
 distiller:
   activation_dropout: 0.0
   activation_fn: gelu
   attention_dropout: 0.1
   attn_type: ''
-  checkpoint_activations: false
+  checkpoint_activations: False
   conv_bias: False
   conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] * 2'
   conv_pos: 128
@@ -14,7 +15,7 @@ distiller:
   crop_seq_to_multiple: 1
   depthwise_conv_kernel_size: 31
   dropout: 0.1
-  dropout_input: 0.0
+  dropout_input: 0.1
   enable_tr_layer: False
   encoder_attention_heads: 12
   encoder_embed_dim: 768
@@ -22,41 +23,49 @@ distiller:
   encoder_layerdrop: 0.0
   encoder_layers: 2   # student_encoder_layers = 2
   extractor_mode: default
-  feature_grad_mult: 1.0
-  final_dim: 0
-  fp16: False
+  feature_grad_mult: 0.1
+  final_dim: 256
+  fp16: True
   init_conv_layers: True
-  init_encoder_layers: 0
+  init_encoder_layers: 2
   layer_norm_first: False
   layer_type: transformer
-  max_positions: 100000
+  max_positions: 8000
   pos_conv_depth: 1
   pos_enc_type: abs
   pred_head_final_dim: 768
   pred_head_inter_dim: 0
   pred_layer_id: '[3, 7, 11]'
-  required_seq_len_multiple: 2
+  required_seq_len_multiple: 1
   tr_conv1d_kernel_stride: (2, 2)
   tr_layer_index: 1
   tr_reduce_factor: 2
-  type_of_tr_layer: fc1
+  type_of_tr_layer: fc2
 
 train:
-  num_epochs: 150
+  num_epochs: 100
   cosine_weight: 1
   gpus: 2
   batch_size: 4
-  accumulate_grad_batches: 6
-  learning_rate: 0.001
+  accumulate_grad_batches: 3
+  learning_rate: 1e-4
   warmup_ratio: 0.01
   monitor_losses: True
   use_gt_for_ctc: True
-  test: False
+
+optimizer:
+  name: AdamW_with_schedule
+  lr: 2.e-4
+  warmup_proportion: 0.07
+  betas: [0.9, 0.98]
+  eps: 1.e-6
+  weight_decay: 1.e-6
   
 data:
   bucketing_path: './data/len_for_bucket'
-  libri_root: '../data/LibriSpeech'
+  libri_root: '../LibriSpeech'
   train_set: ['train-clean-100']
-  output_dir: 'new_model_test'
+  # train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
+  output_dir: 'distilhubert'
   checkpoint:
   test_set: ['test-clean']

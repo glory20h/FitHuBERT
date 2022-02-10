@@ -65,6 +65,49 @@ class CTCSequenceConverter:
         return [tok[0] for tok in groupby(ids) if tok[0] != 0]
 
 
+class TeacherWrapper(nn.Module):
+    def __init__(
+        self,
+        model,
+    ):
+        """
+        Wrapper for the teacher model 
+        The wrapper makes it possible to get every intermediate outputs via hooks
+        """
+        super().__init__()
+        self.model = model
+        self._hook_hiddens = []
+
+        def generate_hook_handler(hiddens: List):
+            def hook_handler(self, input, output):
+                hiddens.append(output)
+
+            return hook_handler
+
+        for module in self.model.encoder.layers:
+            module.register_forward_hook(
+                generate_hook_handler(self._hook_hiddens) # -> but is it absolutely needed?
+            )
+
+    def extract_features(self, source, padding_mask):
+        self._hook_hiddens.clear()
+        result = {}
+
+        self.model.extract_features(
+            source,
+            padding_mask,
+            mask=None,
+        )
+
+        hook_hiddens = self._hook_hiddens.copy()
+        self._hook_hiddens.clear()
+
+        result['layer_results'] = hook_hiddens
+        result['x'] = result['layer_results'][-1][0].transpose(0, 1)
+
+        return result
+
+
 def Embedding(num_embeddings, embedding_dim, padding_idx):
     m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
     nn.init.normal_(m.weight, mean=0, std=embedding_dim ** -0.5)
@@ -95,12 +138,16 @@ def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = No
 
     if model_type == 'wav2vec2':
         model_cfg = merge_with_parent(Wav2Vec2Config(), model_cfg)
+        with open_dict(model_cfg):
+            model_cfg.required_seq_len_multiple = 1
         model = Wav2Vec2Model.build_model(model_cfg)
         task_agnostic = True
     elif model_type == 'wav2vec_ctc':
         cfg.task['data'] = './' # Set path where dict exists
         task = AudioFinetuningTask.setup_task(cfg.task)
         model_cfg = merge_with_parent(Wav2Vec2CtcConfig(), model_cfg)
+        with open_dict(model_cfg):
+            model_cfg.required_seq_len_multiple = 1
         model = Wav2VecCtc.build_model(model_cfg, task)
         task_agnostic = False
     elif model_type == "hubert":
@@ -110,6 +157,7 @@ def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = No
         # Update needed due to a bug in latest version of fairseq
         with open_dict(model_cfg):
             model_cfg.required_seq_len_multiple = 1
+            model_cfg.layer_type = 'transformer'
         model = HubertModel.build_model(model_cfg, task)
         task_agnostic = True
     else:
@@ -117,6 +165,10 @@ def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = No
 
     model = quantization_utils.quantize_model_scalar(model, cfg)
     model.load_state_dict(state['model'], strict=True, model_cfg=cfg.model)
+
+    # Wrap Teacher
+    model.encoder.layerdrop = 0
+    model = TeacherWrapper(model)
 
     return model, model_cfg, task_agnostic
 

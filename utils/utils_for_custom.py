@@ -1,5 +1,6 @@
 from argparse import Namespace
 import contextlib
+import os
 import yaml
 import copy
 import math
@@ -194,10 +195,13 @@ def dump_yaml(cfg, yaml_dict):
         else:
             dump_dict['distiller'][key] = distiller[key]
 
+    dump_dir = './results/' + dump_dict['data']['output_dir']
+    os.makedirs(dump_dir, exist_ok=True)
+
     # name as current time
     name = datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d_%Hh%Mm%Ss')
 
-    with open('./data/log/' + name + '.yaml', 'w') as f:
+    with open(os.path.join(dump_dir, name + '.yaml'), 'w') as f:
         yaml.dump(dump_dict, f, sort_keys = False)
     
     return dump_dict
