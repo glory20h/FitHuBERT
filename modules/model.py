@@ -200,6 +200,11 @@ class CustomStudentModelConfig(FairseqDataclass):
         metadata={"help": "In which index should the time reduction layer be inserted"}
     )
 
+    teacher_task_agnostic: bool = field(
+        default=True,
+        metadata={"help": "Flag to determine whether the teacher model is task-agnostic"}
+    )
+
 
 class CustomStudentModel(BaseFairseqModel):
     def __init__(

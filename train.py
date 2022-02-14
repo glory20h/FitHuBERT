@@ -286,7 +286,6 @@ class W2V2Distil(LightningModule):
             #     "monitor": "v_loss",
             # },
         }
-
         
 
     def update_student_config(self, cfg: dict):
@@ -297,17 +296,18 @@ class W2V2Distil(LightningModule):
         self.student_config.encoder_layers = cfg['encoder_layers']
         self.student_config.enable_tr_layer = cfg['enable_tr_layer']
         self.student_config.type_of_tr_layer = cfg['type_of_tr_layer']
-        self.student_config.tr_layer_floor = cfg['tr_layer_index']
+        self.student_config.tr_layer_index = cfg['tr_layer_index']
         
         # Initialization related
         self.student_config.init_conv_layers = cfg['init_conv_layers']
         self.student_config.init_encoder_layers = cfg['init_encoder_layers']
 
         # Prediction head related
-        self.student_config.proj_head_inter_dim = cfg['pred_head_inter_dim']
-        self.student_config.proj_head_final_dim = cfg['pred_head_final_dim']
+        self.student_config.pred_head_inter_dim = cfg['pred_head_inter_dim']
+        self.student_config.pred_head_final_dim = cfg['pred_head_final_dim']
         self.student_config.pred_layer_id = cfg['pred_layer_id']
         self.student_config.teacher_task_agnostic = self.task_agnostic
+
 
     def train_dataloader(self):
         return DataLoader(self.train_data,
