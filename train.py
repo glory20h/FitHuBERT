@@ -49,20 +49,13 @@ class W2V2Distil(LightningModule):
         self.teacher_model, teacher_config, self.task_agnostic = load_model_and_config(teacher_model)
         freeze_model(self.teacher_model)
 
-        # Assign more configs about student compares to teacher
-        student_config = CustomStudentModelConfig()
-        target_keys = student_config._get_all_attributes()
-        for k in teacher_config.keys():
-            if k in target_keys:
-                setattr(student_config, k, getattr(teacher_config, k))
-
-        # Only several attributes referred in this method are updated to student
-        # even though you write something about student model in config yaml file 
-        self.student_config = student_config
+        # Make student config independent of teacher
         distiller_cfg = self.yaml_cfg['distiller']
-        self.update_student_config(distiller_cfg)
+        student_config = CustomStudentModelConfig(**distiller_cfg)
+        student_config.teacher_task_agnostic = self.task_agnostic
 
         # TODO: how to make it save only once?
+        # if self.trainer.is_global_zero:
         dump_yaml(student_config, self.yaml_cfg)
 
         # Model Initialize -> Distillation training -> Add FC/Dropout & Fine-tuning
@@ -286,28 +279,6 @@ class W2V2Distil(LightningModule):
             #     "monitor": "v_loss",
             # },
         }
-        
-
-    def update_student_config(self, cfg: dict):
-        # Set student w2v model configs before distillation
-        # These attributes are not dependent to teacher model
-
-        # Model spec related
-        self.student_config.encoder_layers = cfg['encoder_layers']
-        self.student_config.enable_tr_layer = cfg['enable_tr_layer']
-        self.student_config.type_of_tr_layer = cfg['type_of_tr_layer']
-        self.student_config.tr_layer_index = cfg['tr_layer_index']
-        
-        # Initialization related
-        self.student_config.init_conv_layers = cfg['init_conv_layers']
-        self.student_config.init_encoder_layers = cfg['init_encoder_layers']
-
-        # Prediction head related
-        self.student_config.pred_head_inter_dim = cfg['pred_head_inter_dim']
-        self.student_config.pred_head_final_dim = cfg['pred_head_final_dim']
-        self.student_config.pred_layer_id = cfg['pred_layer_id']
-        self.student_config.teacher_task_agnostic = self.task_agnostic
-
 
     def train_dataloader(self):
         return DataLoader(self.train_data,
@@ -351,7 +322,7 @@ if __name__ == '__main__':
         YAML_CFG = yaml.load(f, Loader = yaml.FullLoader)
 
     batch_size = YAML_CFG['train']['batch_size']
-    output_dir = './results/' + YAML_CFG['data']['output_dir']
+    output_dir = './results/pretrain' + YAML_CFG['data']['output_dir']
     checkpoint = YAML_CFG['data']['checkpoint']
     gpus = YAML_CFG['train']['gpus']
     num_epochs = YAML_CFG['train']['num_epochs']
