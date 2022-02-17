@@ -367,9 +367,12 @@ class CustomStudentModel(BaseFairseqModel):
         self.feature_extractor.load_state_dict(
             teacher_model.model.feature_extractor.state_dict()
         )
-        self.post_extract_proj.load_state_dict(
-            teacher_model.model.post_extract_proj.state_dict()
-        )
+        try:
+            self.post_extract_proj.load_state_dict(
+                teacher_model.model.post_extract_proj.state_dict()
+            )
+        except:
+            pass
 
 
     def init_from_teacher_enc(self, teacher_model, n_layers):
