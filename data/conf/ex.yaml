@@ -43,13 +43,14 @@ distiller:
   type_of_tr_layer: fc2
 
 train:
+  output_dir: 'distil'
+  checkpoint:
   num_epochs: 100
-  cosine_weight: 1
+  cosine_weight: 1.0
   gpus: 2
   batch_size: 4
   accumulate_grad_batches: 3
-  learning_rate: 1e-4
-  warmup_ratio: 0.01
+  use_fp16: True
   monitor_losses: True
   use_gt_for_ctc: True
 
@@ -64,8 +65,6 @@ optimizer:
 data:
   bucketing_path: './data/len_for_bucket'
   libri_root: '../LibriSpeech'
-  train_set: ['train-clean-100']
-  # train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
-  output_dir: 'distilhubert'
-  checkpoint:
+  # train_set: ['train-clean-100']
+  train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
   test_set: ['test-clean']

@@ -195,7 +195,7 @@ def dump_yaml(cfg, yaml_dict):
         else:
             dump_dict['distiller'][key] = distiller[key]
 
-    dump_dir = './results/pretrain/' + dump_dict['data']['output_dir']
+    dump_dir = './results/pretrain/' + dump_dict['train']['output_dir']
     os.makedirs(dump_dir, exist_ok=True)
 
     # name as current time

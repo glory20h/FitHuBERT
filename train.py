@@ -251,19 +251,19 @@ class W2V2Distil(LightningModule):
         return total_loss, losses
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=eval(self.yaml_cfg['train']['learning_rate']))
+        # optimizer = torch.optim.AdamW(self.parameters(), lr=eval(self.yaml_cfg['optimizer']['lr']))
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
 
         train_batches = len(self.train_dataloader()) // self.yaml_cfg['train']['gpus']
         num_training_steps = (self.yaml_cfg['train']['num_epochs'] * train_batches) // self.yaml_cfg['train']['accumulate_grad_batches']
-        num_warmup_steps = int(num_training_steps * self.yaml_cfg['train']['warmup_ratio'])
+        num_warmup_steps = int(num_training_steps * self.yaml_cfg['optimizer']['warmup_proportion'])
 
-        lr_scheduler = get_scheduler(
-            "linear",
-            optimizer=optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=num_training_steps
-        )
+        # lr_scheduler = get_scheduler(
+        #     "linear",
+        #     optimizer=optimizer,
+        #     num_warmup_steps=num_warmup_steps,
+        #     num_training_steps=num_training_steps
+        # )
         return {
             "optimizer": get_optimizer(
                 [self.student_model],
@@ -271,14 +271,14 @@ class W2V2Distil(LightningModule):
                 self.yaml_cfg['optimizer']
             )
         }
-        return {
-            "optimizer": optimizer, 
-            "lr_scheduler": lr_scheduler,
-            # "lr_scheduler": {
-            #     "scheduler": scheduler,
-            #     "monitor": "v_loss",
-            # },
-        }
+        # return {
+        #     "optimizer": optimizer, 
+        #     "lr_scheduler": lr_scheduler,
+        #     # "lr_scheduler": {
+        #     #     "scheduler": scheduler,
+        #     #     "monitor": "v_loss",
+        #     # },
+        # }
 
     def train_dataloader(self):
         return DataLoader(self.train_data,
@@ -322,10 +322,11 @@ if __name__ == '__main__':
         YAML_CFG = yaml.load(f, Loader = yaml.FullLoader)
 
     batch_size = YAML_CFG['train']['batch_size']
-    output_dir = './results/pretrain/' + YAML_CFG['data']['output_dir']
-    checkpoint = YAML_CFG['data']['checkpoint']
+    output_dir = './results/pretrain/' + YAML_CFG['train']['output_dir']
+    checkpoint = YAML_CFG['train']['checkpoint']
     gpus = YAML_CFG['train']['gpus']
     num_epochs = YAML_CFG['train']['num_epochs']
+    use_fp16 = 16 if YAML_CFG['train']['use_fp16'] else 32
     accumulate_grad_batches = YAML_CFG['train']['accumulate_grad_batches']
 
     model = W2V2Distil(cfg = YAML_CFG)
@@ -354,8 +355,7 @@ if __name__ == '__main__':
         gpus=gpus,
         strategy="ddp",
         amp_backend="apex",
-        # amp_level="O2",
-        precision=16,
+        precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,
         accumulate_grad_batches=accumulate_grad_batches,
