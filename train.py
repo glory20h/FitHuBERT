@@ -322,7 +322,7 @@ if __name__ == '__main__':
         YAML_CFG = yaml.load(f, Loader = yaml.FullLoader)
 
     batch_size = YAML_CFG['train']['batch_size']
-    output_dir = './results/pretrain' + YAML_CFG['data']['output_dir']
+    output_dir = './results/pretrain/' + YAML_CFG['data']['output_dir']
     checkpoint = YAML_CFG['data']['checkpoint']
     gpus = YAML_CFG['train']['gpus']
     num_epochs = YAML_CFG['train']['num_epochs']
