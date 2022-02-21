@@ -75,6 +75,9 @@ class W2V2Distil(LightningModule):
                 setattr(layer, 'forward', bound_method)
 
         self.batch_size = self.yaml_cfg['train']['batch_size']
+        self.num_gpus = self.yaml_cfg['train']['gpus']
+        if isinstance(self.num_gpus, list):
+            self.num_gpus = len(self.num_gpus)
         data_cfg = self.yaml_cfg['data']
         bucketing_path = data_cfg['bucketing_path']
         libri_root = data_cfg['libri_root']
@@ -289,7 +292,7 @@ class W2V2Distil(LightningModule):
         # optimizer = torch.optim.AdamW(self.parameters(), lr=eval(self.yaml_cfg['optimizer']['lr']))
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
 
-        train_batches = len(self.train_dataloader()) // self.yaml_cfg['train']['gpus']
+        train_batches = len(self.train_dataloader()) // self.num_gpus
         num_training_steps = (self.yaml_cfg['train']['num_epochs'] * train_batches) // self.yaml_cfg['train']['accumulate_grad_batches']
         num_warmup_steps = int(num_training_steps * self.yaml_cfg['optimizer']['warmup_proportion'])
 
@@ -320,19 +323,19 @@ class W2V2Distil(LightningModule):
                           batch_size=1,
                           shuffle=True,
                           collate_fn=self.train_data.collate_fn,
-                          num_workers=self.yaml_cfg['train']['gpus']*4)
+                          num_workers=self.num_gpus*4)
 
     def val_dataloader(self):
         return DataLoader(self.eval_data,
                           batch_size=1,
                           collate_fn=self.eval_data.collate_fn,
-                          num_workers=self.yaml_cfg['train']['gpus']*4)
+                          num_workers=self.num_gpus*4)
     
     def test_dataloader(self):
         return DataLoader(self.test_data,
                           batch_size=1,
                           collate_fn=self.test_data.collate_fn,
-                          num_workers=self.yaml_cfg['train']['gpus']*4)
+                          num_workers=self.num_gpus*4)
 
     def get_progress_bar_dict(self):
         tqdm_dict = super().get_progress_bar_dict()
