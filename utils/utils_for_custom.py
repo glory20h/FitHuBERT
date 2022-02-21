@@ -175,33 +175,3 @@ def convert_dict_to_custom_config(cfg):
     config.latent_temp = cfg.latent_temp
     
     return config
-
-# Make yaml file with given name and config dataclass
-def dump_yaml(cfg, yaml_dict):
-    
-    # cfg: updated distiller config dataclass (= student_config)
-    # yaml_file: dumping yaml file (= YAML_CFG)
-    distiller = dict()
-    
-    for attr in dir(cfg):
-        if not callable(getattr(cfg, attr)) and not attr.startswith("_"):
-            distiller[attr] = getattr(cfg, attr)
-
-    dump_dict = yaml_dict
-
-    for key in distiller:
-        if key in ['activation_fn', 'extractor_mode', 'layer_type']:
-            dump_dict['distiller'][key] = str(distiller[key])
-        else:
-            dump_dict['distiller'][key] = distiller[key]
-
-    dump_dir = './results/pretrain/' + dump_dict['train']['output_dir']
-    os.makedirs(dump_dir, exist_ok=True)
-
-    # name as current time
-    name = datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d_%Hh%Mm%Ss')
-
-    with open(os.path.join(dump_dir, name + '.yaml'), 'w') as f:
-        yaml.dump(dump_dict, f, sort_keys = False)
-    
-    return dump_dict

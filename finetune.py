@@ -26,38 +26,40 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'ds_test1'
-#CHECKPOINT = 'last.ckpt'
-CHECKPOINT = None
+OUTPUT_DIR = 'hubert-512D-8H-6L-ASR'
+CHECKPOINT = 'last.ckpt'
+# CHECKPOINT = None
 
-MODEL_CHECKPOINT = None
+MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
+MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
 
 DOWNSTREAM = 'asr'
 
-# UPSTREAM = 'test'
-UPSTREAM = 'distilhubert'
+UPSTREAM = 'test'
+# UPSTREAM = 'distilhubert'
 UPSTREAM_TRAINABLE = False
-# UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
-UPSTREAM_FEATURE_SELECTION = 'paper'
+UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
+# UPSTREAM_FEATURE_SELECTION = 'paper'
 UPSTREAM_LAYER_SELECTION = None
 
 # Training related
-NUM_EPOCHS = 150
-GPUS = 4
+GPUS = 2
 
 SEED = 1339
 
+LIBRI_ROOT = '../LibriSpeech'
 S3PRL_ROOT = '../s3prl/s3prl'
 
 # Evaluation related
 TEST = False
 # --------------------------------------
 
+# TODO: find out what's the cause of dangling memory references
+
 class W2V2Downstream(LightningModule):
     def __init__(self, 
         args,
         config,
-        ckpt_path,
     ):
         super().__init__()
 
@@ -67,7 +69,10 @@ class W2V2Downstream(LightningModule):
         self.config = config
 
         Upstream = getattr(hub, UPSTREAM)
-        self.model = Upstream(ckpt=ckpt_path)
+        self.model = Upstream(
+            ckpt=MODEL_CHECKPOINT,
+            model_config=MODEL_CONFIG,
+        )
 
         if not UPSTREAM_TRAINABLE:
             freeze_model(self.model)
@@ -158,7 +163,7 @@ class W2V2Downstream(LightningModule):
 
     def training_step(self, batch, batch_idx):
         # TODO: find out how s3prl handles deterministic ctc_loss backward pass
-        torch.use_deterministic_algorithms(True)
+        # torch.use_deterministic_algorithms(True)
 
         (wavs, *others) = batch
 
@@ -173,9 +178,12 @@ class W2V2Downstream(LightningModule):
             records=self.train_records
         )
 
-        torch.use_deterministic_algorithms(False)
+        # torch.use_deterministic_algorithms(False)
 
         return loss
+
+    def training_epoch_end(self, training_step_outputs):
+        self.train_records = defaultdict(list)
 
     def validation_step(self, batch, batch_idx):
         (wavs, *others) = batch
@@ -261,6 +269,11 @@ if __name__ == '__main__':
     with open(config, 'r') as file:
         config = yaml.load(file, Loader=yaml.FullLoader)
 
+    # Update downstream config
+    config['downstream_expert']['datarc']['libri_root'] = LIBRI_ROOT
+    config['downstream_expert']['datarc']['bucket_file'] = './data/len_for_bucket'
+    config['downstream_expert']['datarc']['dict_path'] = S3PRL_ROOT + '/downstream/asr/char.dict'
+
     # Dump args as yaml file
     if args is not None:
         with open(os.path.join(output_dir, f'args_{get_time_tag()}.yaml'), 'w') as file:
@@ -270,18 +283,13 @@ if __name__ == '__main__':
     with open(os.path.join(output_dir, f'config_{get_time_tag()}.yaml'), 'w') as file:
         yaml.dump(config, file)
 
+    model = W2V2Downstream(
+        args=args,
+        config=config,
+    )
+
     if CHECKPOINT:
-        model = W2V2Downstream(
-            args=args,
-            config=config,
-            ckpt_path=MODEL_CHECKPOINT,
-        ).load_from_checkpoint(os.path.join(output_dir, CHECKPOINT))
-    else:
-        model = W2V2Downstream(
-            args=args,
-            config=config,
-            ckpt_path=MODEL_CHECKPOINT,
-        )
+        model = model.load_from_checkpoint(os.path.join(output_dir, CHECKPOINT))
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir,
@@ -303,15 +311,15 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=GPUS,
         strategy="ddp",
-        amp_backend="apex",
+        # amp_backend="apex",
         # amp_level="O2",
-        # precision=16,     # -> TODO: For some reason produces error!
-        max_epochs=NUM_EPOCHS,
+        precision=16,     # -> For some reason produces error!
+        max_steps=config['runner']['total_steps'],
         sync_batchnorm=True,
-        deterministic=True,
-        accumulate_grad_batches=config['runner'].get('gradient_accumulate_steps'),
+        # deterministic=True,   # -> For some reason produces error!
+        accumulate_grad_batches=config['runner']['gradient_accumulate_steps'],
         gradient_clip_val=config['runner']['gradient_clipping'],
-        callbacks=[early_stopping, checkpoint_callback],
+        callbacks=[checkpoint_callback],
     )
 
     if TEST:

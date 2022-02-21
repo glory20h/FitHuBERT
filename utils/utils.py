@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -5,6 +6,9 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 import torchaudio
 import math
+import yaml
+from datetime import datetime
+from pytz import timezone
 
 from itertools import groupby
 from typing import Any, Dict, List, Optional, Union
@@ -108,21 +112,6 @@ class TeacherWrapper(nn.Module):
         return result
 
 
-def Embedding(num_embeddings, embedding_dim, padding_idx):
-    m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-    nn.init.normal_(m.weight, mean=0, std=embedding_dim ** -0.5)
-    nn.init.constant_(m.weight[padding_idx], 0)
-    return m
-
-
-def Linear(in_features, out_features, bias=True):
-    m = nn.Linear(in_features, out_features, bias)
-    nn.init.xavier_uniform_(m.weight)
-    if bias:
-        nn.init.constant_(m.bias, 0.0)
-    return m
-
-
 def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = None):
 
     state = load_checkpoint_to_cpu(filename, arg_overrides)
@@ -172,7 +161,43 @@ def load_model_and_config(filename, arg_overrides: Optional[Dict[str, Any]] = No
 
     return model, model_cfg, task_agnostic
 
+
+# Make yaml file with given name and config dataclass
+def dump_yaml(cfg, yaml_dict):
+    
+    # cfg: updated distiller config dataclass (= student_config)
+    # yaml_file: dumping yaml file (= YAML_CFG)
+    distiller = dict()
+    
+    for attr in dir(cfg):
+        if not callable(getattr(cfg, attr)) and not attr.startswith("_"):
+            distiller[attr] = getattr(cfg, attr)
+
+    dump_dict = yaml_dict
+
+    for key in distiller:
+        if key in ['activation_fn', 'extractor_mode', 'layer_type']:
+            dump_dict['distiller'][key] = str(distiller[key])
+        else:
+            dump_dict['distiller'][key] = distiller[key]
+
+    dump_dir = './results/pretrain/' + dump_dict['train']['output_dir']
+    os.makedirs(dump_dir, exist_ok=True)
+
+    # name as current time
+    name = get_time_tag()
+
+    with open(os.path.join(dump_dir, name + '.yaml'), 'w') as f:
+        yaml.dump(dump_dict, f, sort_keys = False)
+    
+    return dump_dict
+
+
 def freeze_model(model):
     """Freeze all parameters in a model."""
     for param in model.parameters():
         param.requires_grad = False
+
+
+def get_time_tag():
+    return datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d_%Hh%Mm%Ss')

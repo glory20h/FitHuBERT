@@ -64,6 +64,16 @@ class W2V2Distil(LightningModule):
             teacher_model=self.teacher_model
         )
 
+        self.rec_loss_weight = self.yaml_cfg['train']['rec_loss_weight']
+        self.sim_loss_weight = self.yaml_cfg['train']['sim_loss_weight']
+        self.attn_loss_weight = self.yaml_cfg['train']['attn_loss_weight']
+
+        if self.attn_loss_weight > 0:
+            for layer in self.teacher_model.model.encoder.layers:
+                layer.self_attn._set_skip_embed_dim_check()
+                bound_method = self.student_model.encoder.layers[0].forward.__get__(layer, layer.__class__)
+                setattr(layer, 'forward', bound_method)
+
         self.batch_size = self.yaml_cfg['train']['batch_size']
         data_cfg = self.yaml_cfg['data']
         bucketing_path = data_cfg['bucketing_path']
@@ -132,8 +142,8 @@ class W2V2Distil(LightningModule):
             loss, losses = self.calculate_loss(student_results, teacher_results)
 
         if self.yaml_cfg['train']['monitor_losses']:
-            for i, l in enumerate(losses):
-                self.log(f"loss{i+1}", l.item(), prog_bar=True)
+            for k, v in losses.items():
+                self.log(k, v.item(), prog_bar=True)
 
         return loss
 
@@ -168,10 +178,9 @@ class W2V2Distil(LightningModule):
         student_results, teacher_results = self(**batch)
         
         if not self.task_agnostic:
-            losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
+            loss, losses = self.calculate_loss(student_results, teacher_results, labels=batch['labels'])
         else:
-            losses = self.calculate_loss(student_results, teacher_results)
-        loss = sum(losses)
+            loss, losses = self.calculate_loss(student_results, teacher_results)
 
         if not self.task_agnostic:
             predicted_ids = np.argmax(student_results['encoder_out'].transpose(0,1).cpu().detach().numpy(), axis=-1)
@@ -193,6 +202,8 @@ class W2V2Distil(LightningModule):
             self.log("cer", cer, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
 
     def calculate_loss(self, student_results, teacher_results, labels=None):
+        # TODO: move calculate_loss to utils?
+        losses = {}
     
         teacher_hiddens = [
             teacher_results["layer_results"][i][0].transpose(0, 1)
@@ -210,18 +221,42 @@ class W2V2Distil(LightningModule):
             
         rec_loss = rec_loss.mean()
         
-        if self.yaml_cfg['train']['cosine_weight'] > 0:
+        if self.sim_loss_weight > 0:
             sim_loss = -F.logsigmoid(F.cosine_similarity(proj, target, dim=-1))
             with torch.no_grad():
                 sim_layer_loss = sim_loss.mean((0, 2))
             sim_loss = sim_loss.mean()
         else:
             sim_loss = 0
+            # TODO: fix when sim_loss_weight = 0
             sim_layer_loss = None
-            
-        total_loss = rec_loss + self.yaml_cfg['train']['cosine_weight'] * sim_loss
+
+        feat_losses = torch.add(rec_layer_loss, sim_layer_loss)
         
-        losses = torch.add(rec_layer_loss, sim_layer_loss)
+        for i, pred_id in enumerate(self.student_model.pred_layer_id):
+            losses[f'layer{pred_id}'] = feat_losses[i]
+
+        # Attention distribution transfer loss
+        if self.attn_loss_weight > 0:
+            attn_input_ = student_results['layer_results'][-1][1]
+            attn_input = F.log_softmax(attn_input_, dim=-1).type_as(attn_input_)
+            attn_target_ = teacher_results['layer_results'][-1][1][0]
+            attn_target = F.softmax(attn_target_, dim=-1).type_as(attn_target_)
+            attn_loss = F.kl_div(
+                attn_input, 
+                attn_target, 
+                reduction='none',
+            ).sum(dim=-1).mean() * 50
+
+            losses['attn_loss'] = attn_loss
+        else:
+            attn_loss = 0
+            
+        total_loss = (
+            self.rec_loss_weight * rec_loss
+            + self.sim_loss_weight * sim_loss 
+            + self.attn_loss_weight * attn_loss
+        )
 
         if not self.task_agnostic:
             # Process output for CTC loss

@@ -46,7 +46,9 @@ train:
   output_dir: 'distil'
   checkpoint:
   num_epochs: 100
-  cosine_weight: 1.0
+  rec_loss_weight: 1.0
+  sim_loss_weight: 1.0
+  attn_loss_weight: 0
   gpus: 2
   batch_size: 4
   accumulate_grad_batches: 3

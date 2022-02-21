@@ -439,7 +439,7 @@ class ConformerEncoder(TransformerEncoder):
                 x, z = layer(
                     x,
                     self_attn_padding_mask=padding_mask,
-                    need_weights=False,
+                    need_weights=True,
                     position_emb=position_emb,
                 )
                 if tgt_layer is not None:
@@ -489,6 +489,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
             dropout=attention_dropout,
             self_attention=True,
         )
+        self.self_attn._set_skip_embed_dim_check()
 
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(self.activation_dropout)
@@ -517,17 +518,34 @@ class TransformerSentenceEncoderLayer(nn.Module):
         modules similar to the original Transformer imlementation.
         """
         residual = x
+        tgt_len, bsz, embed_dim = x.size()
 
         if self.layer_norm_first:
             x = self.self_attn_layer_norm(x)
-            x, attn = self.self_attn(
+            # x, attn = self.self_attn(
+            #     query=x,
+            #     key=x,
+            #     value=x,
+            #     key_padding_mask=self_attn_padding_mask,
+            #     attn_mask=self_attn_mask,
+            #     need_head_weights=True,
+            # )
+            attn_logits, v = self.self_attn(
                 query=x,
                 key=x,
                 value=x,
                 key_padding_mask=self_attn_padding_mask,
-                attn_mask=self_attn_mask,
-                need_weights=False,
+                before_softmax=True,
             )
+            attn_weights_float = F.softmax(
+                attn_logits, dim=-1
+            )
+            attn_weights = attn_weights_float.type_as(attn_logits)
+            attn_probs = self.self_attn.dropout_module(attn_weights)
+            attn = torch.bmm(attn_probs, v)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+            x = self.self_attn.out_proj(attn)
+
             x = self.dropout1(x)
             x = residual + x
 
@@ -542,13 +560,28 @@ class TransformerSentenceEncoderLayer(nn.Module):
             x = self.dropout3(x)
             x = residual + x
         else:
-            x, attn = self.self_attn(
+            # x, attn = self.self_attn(
+            #     query=x,
+            #     key=x,
+            #     value=x,
+            #     key_padding_mask=self_attn_padding_mask,
+            #     before_softmax=True,
+            # )
+            attn_logits, v = self.self_attn(
                 query=x,
                 key=x,
                 value=x,
                 key_padding_mask=self_attn_padding_mask,
-                need_weights=False,
+                before_softmax=True,
             )
+            attn_weights_float = F.softmax(
+                attn_logits, dim=-1
+            )
+            attn_weights = attn_weights_float.type_as(attn_logits)
+            attn_probs = self.self_attn.dropout_module(attn_weights)
+            attn = torch.bmm(attn_probs, v)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+            x = self.self_attn.out_proj(attn)
 
             x = self.dropout1(x)
             x = residual + x
@@ -566,7 +599,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
             x = residual + x
             x = self.final_layer_norm(x)
 
-        return x, (attn, layer_result)
+        return x, (attn_logits, layer_result)
 
 
 class SplitLinear(nn.Module):
