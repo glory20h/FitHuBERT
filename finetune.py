@@ -281,7 +281,7 @@ if __name__ == '__main__':
     )
 
     config['runner']['total_steps'] = (
-        config['runner']['total_steps'] // len(GPUS) if isinstance(GPUS, list) else GPUS
+        config['runner']['total_steps'] // (len(GPUS) if isinstance(GPUS, list) else GPUS)
     )   # -> TODO: must verify this
 
     # Dump args as yaml file
