@@ -27,8 +27,8 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 # Checkpoint related
 OUTPUT_DIR = 'hubert-512D-8H-6L-ASR'
-CHECKPOINT = 'last.ckpt'
-# CHECKPOINT = None
+# CHECKPOINT = 'last.ckpt'
+CHECKPOINT = None
 
 MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
 MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
@@ -102,8 +102,7 @@ class W2V2Downstream(LightningModule):
         self.train_split = self.config['runner'].get("train_dataloader", "train")
         self.eval_split = self.config['runner']['eval_dataloaders'][0]
 
-        self.train_batch_size = self.config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
-        self.eval_batch_size = self.config['downstream_expert']['datarc']['eval_batch_size'] // ACCUMULATE_GRAD_BATCHES
+        self.eval_batch_size = self.config['downstream_expert']['datarc']['eval_batch_size']
 
         self.train_records = defaultdict(list)
         self.eval_records = defaultdict(list)
