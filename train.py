@@ -8,8 +8,6 @@ import torch
 import torchaudio
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from datasets import load_metric
-from transformers import get_scheduler
 from s3prl.optimizers import get_optimizer
 
 from utils import *
@@ -29,20 +27,6 @@ class W2V2Distil(LightningModule):
         super().__init__()
 
         self.yaml_cfg = cfg
-
-        self.data_collator = DataCollatorWithPadding()
-
-        self.wer_metric = load_metric("wer")
-        self.cer_metric = load_metric("cer")
-        
-        self.decoder = Decoder()
-        self.ctc_converter = CTCSequenceConverter(return_type="pt")
-
-        self.char_dict = {"<s>": 0, "<pad>": 1, "</s>": 2, "<unk>": 3, " ": 4, "E": 5, 
-            "T": 6, "A": 7, "O": 8, "N": 9, "I": 10, "H": 11, "S": 12, 
-            "R": 13, "D": 14, "L": 15, "U": 16, "M": 17, "W": 18, "C": 19, 
-            "F": 20, "G": 21, "Y": 22, "P": 23, "B": 24, "V": 25, "K": 26, 
-            "'": 27, "X": 28, "J": 29, "Q": 30, "Z": 31}
 
         # Load teacher model
         teacher_model = self.yaml_cfg['teacher']['teacher_model']
@@ -296,12 +280,6 @@ class W2V2Distil(LightningModule):
         num_training_steps = (self.yaml_cfg['train']['num_epochs'] * train_batches) // self.yaml_cfg['train']['accumulate_grad_batches']
         num_warmup_steps = int(num_training_steps * self.yaml_cfg['optimizer']['warmup_proportion'])
 
-        # lr_scheduler = get_scheduler(
-        #     "linear",
-        #     optimizer=optimizer,
-        #     num_warmup_steps=num_warmup_steps,
-        #     num_training_steps=num_training_steps
-        # )
         return {
             "optimizer": get_optimizer(
                 [self.student_model],
@@ -309,14 +287,6 @@ class W2V2Distil(LightningModule):
                 self.yaml_cfg['optimizer']
             )
         }
-        # return {
-        #     "optimizer": optimizer, 
-        #     "lr_scheduler": lr_scheduler,
-        #     # "lr_scheduler": {
-        #     #     "scheduler": scheduler,
-        #     #     "monitor": "v_loss",
-        #     # },
-        # }
 
     def train_dataloader(self):
         return DataLoader(self.train_data,

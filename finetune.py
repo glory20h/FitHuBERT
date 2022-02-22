@@ -44,6 +44,7 @@ UPSTREAM_LAYER_SELECTION = None
 
 # Training related
 GPUS = 2
+ACCUMULATE_GRAD_BATCHES = 2
 
 SEED = 1339
 
@@ -101,8 +102,8 @@ class W2V2Downstream(LightningModule):
         self.train_split = self.config['runner'].get("train_dataloader", "train")
         self.eval_split = self.config['runner']['eval_dataloaders'][0]
 
-        self.train_batch_size = self.config['downstream_expert']['datarc']['train_batch_size']
-        self.eval_batch_size = self.config['downstream_expert']['datarc']['eval_batch_size']
+        self.train_batch_size = self.config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
+        self.eval_batch_size = self.config['downstream_expert']['datarc']['eval_batch_size'] // ACCUMULATE_GRAD_BATCHES
 
         self.train_records = defaultdict(list)
         self.eval_records = defaultdict(list)
@@ -296,7 +297,7 @@ if __name__ == '__main__':
         filename='checkpoint-{epoch:02d}',
         verbose=True,
         save_last=True,
-        save_top_k=3,
+        save_top_k=1,
         monitor='wer',
         mode='min'
     )
@@ -317,7 +318,7 @@ if __name__ == '__main__':
         max_steps=config['runner']['total_steps'],
         sync_batchnorm=True,
         # deterministic=True,   # -> For some reason produces error!
-        accumulate_grad_batches=config['runner']['gradient_accumulate_steps'],
+        accumulate_grad_batches=ACCUMULATE_GRAD_BATCHES,
         gradient_clip_val=config['runner']['gradient_clipping'],
         callbacks=[checkpoint_callback],
     )
