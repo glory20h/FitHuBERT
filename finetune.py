@@ -324,7 +324,7 @@ if __name__ == '__main__':
         # amp_backend="apex",
         # amp_level="O2",
         precision=16,
-        max_steps=config['runner']['total_steps'] # -> TODO: must verify this
+        max_steps=config['runner']['total_steps'], # -> TODO: must verify this
         sync_batchnorm=True,
         # deterministic=True,   # -> For some reason produces error!
         accumulate_grad_batches=ACCUMULATE_GRAD_BATCHES,
