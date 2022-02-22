@@ -53,6 +53,7 @@ class W2V2Distil(LightningModule):
         self.attn_loss_weight = self.yaml_cfg['train']['attn_loss_weight']
 
         if self.attn_loss_weight > 0:
+            self.teacher_model.model.encoder.need_weights = True
             for layer in self.teacher_model.model.encoder.layers:
                 layer.self_attn._set_skip_embed_dim_check()
                 bound_method = self.student_model.encoder.layers[0].forward.__get__(layer, layer.__class__)

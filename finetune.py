@@ -44,7 +44,7 @@ UPSTREAM_LAYER_SELECTION = None
 
 # Training related
 GPUS = 2
-ACCUMULATE_GRAD_BATCHES = 2
+ACCUMULATE_GRAD_BATCHES = 1
 
 SEED = 1339
 
@@ -281,6 +281,10 @@ if __name__ == '__main__':
         config['downstream_expert']['datarc']['batch_size'] // ACCUMULATE_GRAD_BATCHES
     )
 
+    config['runner']['total_steps'] = (
+        config['runner']['total_steps'] // len(GPUS) if isinstance(GPUS, list) else GPUS
+    )   # -> TODO: must verify this
+
     # Dump args as yaml file
     if args is not None:
         with open(os.path.join(output_dir, f'args_{get_time_tag()}.yaml'), 'w') as file:
@@ -320,8 +324,8 @@ if __name__ == '__main__':
         strategy="ddp",
         # amp_backend="apex",
         # amp_level="O2",
-        precision=16,     # -> For some reason produces error!
-        max_steps=config['runner']['total_steps'],
+        precision=16,
+        max_steps=config['runner']['total_steps'] # -> TODO: must verify this
         sync_batchnorm=True,
         # deterministic=True,   # -> For some reason produces error!
         accumulate_grad_batches=ACCUMULATE_GRAD_BATCHES,

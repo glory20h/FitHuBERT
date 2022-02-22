@@ -1,23 +1,14 @@
 import os
-import numpy as np
+import yaml
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
-import torchaudio
-import math
-import yaml
+from itertools import groupby
 from datetime import datetime
 from pytz import timezone
-
-from itertools import groupby
-from typing import Any, Dict, List, Optional, Union
-from dataclasses import dataclass, field
-from omegaconf import MISSING, II, open_dict
-
-from argparse import Namespace
-import contextlib
-import copy
+from typing import Any, Dict, List, Optional
 
 from fairseq import models, tasks, quantization_utils
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf, merge_with_parent
@@ -27,18 +18,6 @@ from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model, Wav2Vec2Config
 from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc, Wav2Vec2CtcConfig
 from fairseq.models.hubert.hubert import HubertModel, HubertConfig
 from omegaconf.omegaconf import open_dict
-
-class DataCollatorWithPadding:
-    def __call__(self, features: List[Dict[str, Any]]):
-        # split inputs and labels since they have to be of different lengths and need
-        # different padding methods
-        input_features = [feature[0][0] for feature in features]
-        labels = [feature[2] for feature in features]
-        
-        src = pad_sequence(input_features, batch_first=True, padding_value=0)
-        mask = torch.zeros(src.shape).masked_fill_(src==0, 1)
-        
-        return {'src': src, 'mask': mask, 'labels': labels}
 
 
 class Decoder:
@@ -193,11 +172,11 @@ def dump_yaml(cfg, yaml_dict):
     return dump_dict
 
 
+def get_time_tag():
+    return datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d_%Hh%Mm%Ss')
+
+
 def freeze_model(model):
     """Freeze all parameters in a model."""
     for param in model.parameters():
         param.requires_grad = False
-
-
-def get_time_tag():
-    return datetime.now(timezone('Asia/Seoul')).strftime('%Y-%m-%d_%Hh%Mm%Ss')
