@@ -282,7 +282,7 @@ class CustomStudentModel(BaseFairseqModel):
 
         return input_lengths.to(torch.long)
 
-    def _disable_projection_heads():
+    def _disable_projection_heads(self):
         self.proj_head = None
 
     def forward(

@@ -274,6 +274,12 @@ if __name__ == '__main__':
     config['downstream_expert']['datarc']['libri_root'] = LIBRI_ROOT
     config['downstream_expert']['datarc']['bucket_file'] = './data/len_for_bucket'
     config['downstream_expert']['datarc']['dict_path'] = S3PRL_ROOT + '/downstream/asr/char.dict'
+    config['downstream_expert']['datarc']['train_batch_size'] = (
+        config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
+    )
+    config['downstream_expert']['datarc']['batch_size'] = (
+        config['downstream_expert']['datarc']['batch_size'] // ACCUMULATE_GRAD_BATCHES
+    )
 
     # Dump args as yaml file
     if args is not None:
