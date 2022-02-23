@@ -607,7 +607,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
             x = residual + x
             x = self.final_layer_norm(x)
 
-        return x, (attn_logits, layer_result)
+        return x, (attn, layer_result)
 
 
 class SplitLinear(nn.Module):
