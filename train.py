@@ -242,7 +242,7 @@ class W2V2Distil(LightningModule):
             pred = student_results['layer_results'][-1][1]
             target = teacher_results['layer_results'][-1][1][0]
 
-            if attn_loss_type == 'mse':
+            if self.attn_loss_type == 'mse':
                 loss = F.mse_loss(
                     pred,
                     target,
@@ -251,7 +251,7 @@ class W2V2Distil(LightningModule):
                 inf_count = torch.any(loss == float('inf'), 1).count_nonzero() * loss.size(-1)
                 loss[loss == float('inf')] = 0
                 attn_loss = loss.sum() / (loss.numel() - inf_count)
-            elif attn_loss_type == 'kldiv':
+            elif self.attn_loss_type == 'kldiv':
                 loss = F.kl_div(
                     F.log_softmax(pred, dim=-1), 
                     F.softmax(target, dim=-1), 
