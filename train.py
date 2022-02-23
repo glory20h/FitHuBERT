@@ -248,16 +248,18 @@ class W2V2Distil(LightningModule):
                     target,
                     reduction='none'
                 )
-                inf_count = torch.any(loss == float('inf'), 1).count_nonzero() * loss.size(-1)
-                loss[loss == float('inf')] = 0
-                attn_loss = loss.sum() / (loss.numel() - inf_count)
+                inf_count = torch.any(loss.isinf(), 1).count_nonzero() * loss.size(-1)
+                nan_count = torch.any(loss.isnan(), 1).count_nonzero() * loss.size(-1)
+                loss[loss.isinf()] = 0
+                loss[loss.isnan()] = 0
+                attn_loss = loss.sum() / (loss.numel() - inf_count - nan_count)
             elif self.attn_loss_type == 'kldiv':
                 loss = F.kl_div(
                     F.log_softmax(pred, dim=-1), 
                     F.softmax(target, dim=-1), 
                     reduction='none',
                 )
-                loss[loss == float('inf')] = 0
+                loss[loss.isinf()] = 0
                 attn_loss = loss.sum(dim=-1).mean()
             else:
                 raise NotImplementedError("attn_loss_type must be one of 'mse', 'kldiv'.")

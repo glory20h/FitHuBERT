@@ -30,7 +30,7 @@ distiller:
   init_encoder_layers: 2
   layer_norm_first: False
   layer_type: transformer
-  max_positions: 8000
+  max_positions: 100000
   pos_conv_depth: 1
   pos_enc_type: abs
   pred_head_final_dim: 768
