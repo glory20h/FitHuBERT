@@ -26,12 +26,12 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'hubert-512D-8H-6L-ASR'
+OUTPUT_DIR = 'distilhubert-100h-lr2e-3_0.05-ASR'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 
-MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
-MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
+MODEL_CHECKPOINT = './results/pretrain/distilhubert-100h-lr2e-3_0.05/last.ckpt'
+MODEL_CONFIG = './results/pretrain/distilhubert-100h-lr2e-3_0.05/2022-02-21_22h28m01s.yaml'
 
 DOWNSTREAM = 'asr'
 

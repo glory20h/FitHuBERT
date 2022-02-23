@@ -27,6 +27,7 @@ class W2V2Distil(LightningModule):
         super().__init__()
 
         self.yaml_cfg = cfg
+        self.train_cfg = cfg['train']
 
         # Load teacher model
         teacher_model = self.yaml_cfg['teacher']['teacher_model']
@@ -48,19 +49,26 @@ class W2V2Distil(LightningModule):
             teacher_model=self.teacher_model
         )
 
-        self.rec_loss_weight = self.yaml_cfg['train']['rec_loss_weight']
-        self.sim_loss_weight = self.yaml_cfg['train']['sim_loss_weight']
-        self.attn_loss_weight = self.yaml_cfg['train']['attn_loss_weight']
+        self.rec_loss_weight = self.train_cfg['rec_loss_weight']
+        self.sim_loss_weight = self.train_cfg['sim_loss_weight']
+        self.attn_loss_weight = self.train_cfg['attn_loss_weight']
+        self.attn_loss_type = self.train_cfg['attn_loss_type']
 
         if self.attn_loss_weight > 0:
-            self.teacher_model.model.encoder.need_weights = True
             for layer in self.teacher_model.model.encoder.layers:
                 layer.self_attn._set_skip_embed_dim_check()
-                bound_method = self.student_model.encoder.layers[0].forward.__get__(layer, layer.__class__)
+                bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
+                setattr(layer, 'forward', bound_method)
+            for layer in self.student_model.encoder.layers:
+                layer.self_attn._set_skip_embed_dim_check()
+                bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
                 setattr(layer, 'forward', bound_method)
 
-        self.batch_size = self.yaml_cfg['train']['batch_size']
-        self.num_gpus = self.yaml_cfg['train']['gpus']
+        if self.train_cfg['no_projections']:
+            self.student_model._disable_projection_heads()
+
+        self.batch_size = self.train_cfg['batch_size']
+        self.num_gpus = self.train_cfg['gpus']
         if isinstance(self.num_gpus, list):
             self.num_gpus = len(self.num_gpus)
         data_cfg = self.yaml_cfg['data']
@@ -129,7 +137,7 @@ class W2V2Distil(LightningModule):
         else:
             loss, losses = self.calculate_loss(student_results, teacher_results)
 
-        if self.yaml_cfg['train']['monitor_losses']:
+        if self.train_cfg['monitor_losses']:
             for k, v in losses.items():
                 self.log(k, v.item(), prog_bar=True)
 
@@ -200,41 +208,59 @@ class W2V2Distil(LightningModule):
         
         teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
         
-        proj = student_results['projections']
-        target = teacher_hiddens
+        if self.train_cfg['no_projections']:
+            pred = torch.stack([
+                student_results["layer_results"][-1][0].transpose(0, 1)
+                for i in self.student_model.pred_layer_id
+            ], dim=1)
+        else:
+            pred = student_results['projections']
+        target = teacher_hiddens[:, :, :pred.shape[2]]
         
-        rec_loss = F.l1_loss(proj, target, reduction="none")
+        rec_loss = F.l1_loss(pred, target, reduction="none")
         with torch.no_grad():
             rec_layer_loss = rec_loss.mean((0, 2, 3))
             
         rec_loss = rec_loss.mean()
         
         if self.sim_loss_weight > 0:
-            sim_loss = -F.logsigmoid(F.cosine_similarity(proj, target, dim=-1))
+            sim_loss = -F.logsigmoid(F.cosine_similarity(pred, target, dim=-1))
             with torch.no_grad():
                 sim_layer_loss = sim_loss.mean((0, 2))
             sim_loss = sim_loss.mean()
         else:
             sim_loss = 0
-            # TODO: fix when sim_loss_weight = 0
-            sim_layer_loss = None
+            sim_layer_loss = 0
 
-        feat_losses = torch.add(rec_layer_loss, sim_layer_loss)
+        feat_loss = torch.add(rec_layer_loss, sim_layer_loss)
         
         for i, pred_id in enumerate(self.student_model.pred_layer_id):
-            losses[f'layer{pred_id}'] = feat_losses[i]
+            losses[f'layer{pred_id}'] = feat_loss[i]
 
         # Attention distribution transfer loss
         if self.attn_loss_weight > 0:
-            attn_input_ = student_results['layer_results'][-1][1]
-            attn_input = F.log_softmax(attn_input_, dim=-1).type_as(attn_input_)
-            attn_target_ = teacher_results['layer_results'][-1][1][0]
-            attn_target = F.softmax(attn_target_, dim=-1).type_as(attn_target_)
-            attn_loss = F.kl_div(
-                attn_input, 
-                attn_target, 
-                reduction='none',
-            ).sum(dim=-1).mean() * 50
+            pred = student_results['layer_results'][-1][1]
+            target = teacher_results['layer_results'][-1][1][0]
+
+            if attn_loss_type == 'mse':
+                loss = F.mse_loss(
+                    pred,
+                    target,
+                    reduction='none'
+                )
+                inf_count = torch.any(loss == float('inf'), 1).count_nonzero() * loss.size(-1)
+                loss[loss == float('inf')] = 0
+                attn_loss = loss.sum() / (loss.numel() - inf_count)
+            elif attn_loss_type == 'kldiv':
+                loss = F.kl_div(
+                    F.log_softmax(pred, dim=-1), 
+                    F.softmax(target, dim=-1), 
+                    reduction='none',
+                )
+                loss[loss == float('inf')] = 0
+                attn_loss = loss.sum(dim=-1).mean()
+            else:
+                raise NotImplementedError("attn_loss_type must be one of 'mse', 'kldiv'.")
 
             losses['attn_loss'] = attn_loss
         else:
@@ -250,7 +276,7 @@ class W2V2Distil(LightningModule):
             # Process output for CTC loss
             ctc_input = student_results['x'].log_softmax(2) # -> Revise this
 
-            if self.yaml_cfg['train']['use_gt_for_ctc']:
+            if self.train_cfg['use_gt_for_ctc']:
                 # Use Ground Truth labels instead of labels from the teacher model
                 gt_tokens = [torch.tensor([self.char_dict[char] for char in label]) for label in labels]
                 target = torch.cat(gt_tokens)
@@ -278,7 +304,7 @@ class W2V2Distil(LightningModule):
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
 
         train_batches = len(self.train_dataloader()) // self.num_gpus
-        num_training_steps = (self.yaml_cfg['train']['num_epochs'] * train_batches) // self.yaml_cfg['train']['accumulate_grad_batches']
+        num_training_steps = (self.train_cfg['num_epochs'] * train_batches) // self.train_cfg['accumulate_grad_batches']
         num_warmup_steps = int(num_training_steps * self.yaml_cfg['optimizer']['warmup_proportion'])
 
         return {

@@ -49,12 +49,14 @@ train:
   rec_loss_weight: 1.0
   sim_loss_weight: 1.0
   attn_loss_weight: 0
+  attn_loss_type: 'kldiv'
   gpus: 2
   batch_size: 4
   accumulate_grad_batches: 3
   use_fp16: True
   monitor_losses: True
   use_gt_for_ctc: True
+  no_projections: False
 
 optimizer:
   name: AdamW_with_schedule

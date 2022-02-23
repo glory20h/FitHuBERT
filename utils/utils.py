@@ -180,3 +180,175 @@ def freeze_model(model):
     """Freeze all parameters in a model."""
     for param in model.parameters():
         param.requires_grad = False
+
+
+def rtrn_attn_forward(
+    self,
+    x: torch.Tensor,
+    self_attn_mask: torch.Tensor = None,
+    self_attn_padding_mask: torch.Tensor = None,
+    need_weights: bool = True,
+    att_args=None,
+):
+    """
+    The substitute forward function for the TransformerSentenceEncoderLayer module.
+    It returns unnormalized attention weights which would not return it by default.
+    """
+    residual = x
+    tgt_len, bsz, embed_dim = x.size()
+
+    if self.layer_norm_first:
+        x = self.self_attn_layer_norm(x)
+
+        attn_logits, v = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            attn_mask=self_attn_mask,
+            before_softmax=True,
+        )
+        attn_weights_float = F.softmax(
+            attn_logits, dim=-1
+        )
+        attn_weights = attn_weights_float.type_as(attn_logits)
+        attn_probs = self.self_attn.dropout_module(attn_weights)
+        attn = torch.bmm(attn_probs, v)
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        x = self.self_attn.out_proj(attn)
+        attn = attn_logits
+
+        x = self.dropout1(x)
+        x = residual + x
+
+        residual = x
+        x = self.final_layer_norm(x)
+        x = self.activation_fn(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+
+        layer_result = x
+
+        x = self.dropout3(x)
+        x = residual + x
+    else:
+        attn_logits, v = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            before_softmax=True,
+        )
+        attn_weights_float = F.softmax(
+            attn_logits, dim=-1
+        )
+        attn_weights = attn_weights_float.type_as(attn_logits)
+        attn_probs = self.self_attn.dropout_module(attn_weights)
+        attn = torch.bmm(attn_probs, v)
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        x = self.self_attn.out_proj(attn)
+        attn = attn_logits
+
+        x = self.dropout1(x)
+        x = residual + x
+
+        x = self.self_attn_layer_norm(x)
+
+        residual = x
+        x = self.activation_fn(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+
+        layer_result = x
+
+        x = self.dropout3(x)
+        x = residual + x
+        x = self.final_layer_norm(x)
+
+    return x, (attn, layer_result)
+
+
+def test_forward(
+    self,
+    x: torch.Tensor,
+    self_attn_mask: torch.Tensor = None,
+    self_attn_padding_mask: torch.Tensor = None,
+    need_weights: bool = True,
+    att_args=None,
+):
+    """
+    The substitute forward function for the TransformerSentenceEncoderLayer module.
+    It returns unnormalized attention weights which would not return it by default.
+    """
+    residual = x
+    tgt_len, bsz, embed_dim = x.size()
+
+    if self.layer_norm_first:
+        x = self.self_attn_layer_norm(x)
+
+        attn_logits, v = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            attn_mask=self_attn_mask,
+            before_softmax=True,
+        )
+        attn_weights_float = F.softmax(
+            attn_logits, dim=-1
+        )
+        attn_weights = attn_weights_float.type_as(attn_logits)
+        attn_probs = self.self_attn.dropout_module(attn_weights)
+        attn = torch.bmm(attn_probs, v)
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        x = self.self_attn.out_proj(attn)
+        attn = attn_logits
+
+        x = self.dropout1(x)
+        x = residual + x
+
+        residual = x
+        x = self.final_layer_norm(x)
+        x = self.activation_fn(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+
+        layer_result = x
+
+        x = self.dropout3(x)
+        x = residual + x
+    else:
+        attn_logits, v = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            before_softmax=True,
+        )
+        attn_weights_float = F.softmax(
+            attn_logits, dim=-1
+        )
+        attn_weights = attn_weights_float.type_as(attn_logits)
+        attn_probs = self.self_attn.dropout_module(attn_weights)
+        attn = torch.bmm(attn_probs, v)
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        x = self.self_attn.out_proj(attn)
+        attn = attn_logits
+
+        x = self.dropout1(x)
+        x = residual + x
+
+        x = self.self_attn_layer_norm(x)
+
+        residual = x
+        x = self.activation_fn(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+
+        layer_result = x
+
+        x = self.dropout3(x)
+        x = residual + x
+        x = self.final_layer_norm(x)
+
+    return x, (attn, layer_result)

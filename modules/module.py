@@ -247,7 +247,6 @@ class TransformerEncoder(nn.Module):
         )
         if args.enable_tr_layer:
             self.layers.insert(args.tr_layer_index, tr_layer)
-        self.need_weights = False
 
         self.layer_norm_first = args.layer_norm_first
         self.layer_norm = LayerNorm(self.embedding_dim)
@@ -317,7 +316,7 @@ class TransformerEncoder(nn.Module):
                     tr_layer_results.append(x)
                 else:
                     x, (z, lr) = layer(
-                        x, self_attn_padding_mask=padding_mask, need_weights=self.need_weights
+                        x, self_attn_padding_mask=padding_mask, need_weights=False
                     )
                     if i >= min_layer:
                         layer_results.append((x, z, lr))
@@ -519,38 +518,17 @@ class TransformerSentenceEncoderLayer(nn.Module):
         modules similar to the original Transformer imlementation.
         """
         residual = x
-        tgt_len, bsz, embed_dim = x.size()
 
         if self.layer_norm_first:
             x = self.self_attn_layer_norm(x)
-            if need_weights:
-                attn_logits, v = self.self_attn(
-                    query=x,
-                    key=x,
-                    value=x,
-                    key_padding_mask=self_attn_padding_mask,
-                    attn_mask=self_attn_mask,
-                    before_softmax=True,
-                )
-                attn_weights_float = F.softmax(
-                    attn_logits, dim=-1
-                )
-                attn_weights = attn_weights_float.type_as(attn_logits)
-                attn_probs = self.self_attn.dropout_module(attn_weights)
-                attn = torch.bmm(attn_probs, v)
-                attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-                x = self.self_attn.out_proj(attn)
-                attn = attn_logits
-            else:
-                x, attn = self.self_attn(
-                    query=x,
-                    key=x,
-                    value=x,
-                    key_padding_mask=self_attn_padding_mask,
-                    attn_mask=self_attn_mask,
-                    need_weights=False,
-                )
-
+            x, attn = self.self_attn(
+                query=x,
+                key=x,
+                value=x,
+                key_padding_mask=self_attn_padding_mask,
+                attn_mask=self_attn_mask,
+                need_weights=False,
+            )
             x = self.dropout1(x)
             x = residual + x
 
@@ -565,31 +543,13 @@ class TransformerSentenceEncoderLayer(nn.Module):
             x = self.dropout3(x)
             x = residual + x
         else:
-            if need_weights:
-                attn_logits, v = self.self_attn(
-                    query=x,
-                    key=x,
-                    value=x,
-                    key_padding_mask=self_attn_padding_mask,
-                    before_softmax=True,
-                )
-                attn_weights_float = F.softmax(
-                    attn_logits, dim=-1
-                )
-                attn_weights = attn_weights_float.type_as(attn_logits)
-                attn_probs = self.self_attn.dropout_module(attn_weights)
-                attn = torch.bmm(attn_probs, v)
-                attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-                x = self.self_attn.out_proj(attn)
-                attn = attn_logits
-            else:
-                x, attn = self.self_attn(
-                    query=x,
-                    key=x,
-                    value=x,
-                    key_padding_mask=self_attn_padding_mask,
-                    need_weights=False,
-                )
+            x, attn = self.self_attn(
+                query=x,
+                key=x,
+                value=x,
+                key_padding_mask=self_attn_padding_mask,
+                need_weights=False,
+            )
 
             x = self.dropout1(x)
             x = residual + x
