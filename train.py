@@ -50,6 +50,7 @@ class W2V2Distil(LightningModule):
         )
 
         self.rec_loss_weight = self.train_cfg['rec_loss_weight']
+        self.rec_loss_type = self.train_cfg['rec_loss_type']
         self.sim_loss_weight = self.train_cfg['sim_loss_weight']
         self.attn_loss_weight = self.train_cfg['attn_loss_weight']
         self.attn_loss_type = self.train_cfg['attn_loss_type']
@@ -215,9 +216,14 @@ class W2V2Distil(LightningModule):
             ], dim=1)
         else:
             pred = student_results['projections']
-        target = teacher_hiddens[:, :, :pred.shape[2]]
+        target = teacher_hiddens.narrow(2, 0, pred.shape[2])
         
-        rec_loss = F.l1_loss(pred, target, reduction="none")
+        if self.rec_loss_type == 'l1':
+            rec_loss = F.l1_loss(pred, target, reduction="none")
+        elif self.rec_loss_type == 'mse':
+            rec_loss = F.mse_loss(pred, target, reduction="none")
+        else:
+            raise NotImplementedError("rec_loss_type must be one of 'l1', 'mse'.")
         with torch.no_grad():
             rec_layer_loss = rec_loss.mean((0, 2, 3))
             
@@ -391,7 +397,7 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=gpus,
         strategy="ddp",
-        amp_backend="apex",
+        # amp_backend="apex",
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,

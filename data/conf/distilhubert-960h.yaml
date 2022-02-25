@@ -13,6 +13,7 @@ train:
   use_fp16: True
   monitor_losses: True
   rec_loss_weight: 1.0
+  rec_loss_type: l1
   sim_loss_weight: 1.0
   attn_loss_weight: 0
   attn_loss_type: kldiv
