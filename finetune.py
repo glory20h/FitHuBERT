@@ -26,25 +26,28 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'distilhubert-100h-lr2e-3_0.05-ASR'
-# CHECKPOINT = 'last.ckpt'
-CHECKPOINT = None
+OUTPUT_DIR = 'distilhubert-paper-test'
+CHECKPOINT = 'last.ckpt'
+# CHECKPOINT = None
 
-MODEL_CHECKPOINT = './results/pretrain/distilhubert-100h-lr2e-3_0.05/last.ckpt'
-MODEL_CONFIG = './results/pretrain/distilhubert-100h-lr2e-3_0.05/2022-02-21_22h28m01s.yaml'
+# MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
+MODEL_CHECKPOINT = None
+# MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
+MODEL_CONFIG = None
 
 DOWNSTREAM = 'asr'
 
-UPSTREAM = 'test'
-# UPSTREAM = 'distilhubert'
+# UPSTREAM = 'test'
+UPSTREAM = 'distilhubert'
 UPSTREAM_TRAINABLE = False
-UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
-# UPSTREAM_FEATURE_SELECTION = 'paper'
+# UPSTREAM_TRAINABLE = True
+# UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
+UPSTREAM_FEATURE_SELECTION = 'paper'
 UPSTREAM_LAYER_SELECTION = None
 
 # Training related
-GPUS = 2
-ACCUMULATE_GRAD_BATCHES = 1
+GPUS = 4
+ACCUMULATE_GRAD_BATCHES = 4
 
 SEED = 1339
 
@@ -52,7 +55,9 @@ LIBRI_ROOT = '../LibriSpeech'
 S3PRL_ROOT = '../s3prl/s3prl'
 
 # Evaluation related
-TEST = False
+# TEST = False
+TEST = True
+TEST_SPLIT = 'test-clean' # default: 'test'
 # --------------------------------------
 
 # TODO: find out what's the cause of dangling memory references
@@ -101,11 +106,13 @@ class W2V2Downstream(LightningModule):
 
         self.train_split = self.config['runner'].get("train_dataloader", "train")
         self.eval_split = self.config['runner']['eval_dataloaders'][0]
+        self.test_split = TEST_SPLIT
 
         self.eval_batch_size = self.config['downstream_expert']['datarc']['eval_batch_size']
 
         self.train_records = defaultdict(list)
         self.eval_records = defaultdict(list)
+        self.test_records = defaultdict(list)
 
         # For better pytorch lightning logging
         logging.shutdown()
@@ -197,7 +204,6 @@ class W2V2Downstream(LightningModule):
         )
 
     def validation_epoch_end(self, validation_step_outputs):
-
         loss = torch.FloatTensor(self.eval_records['loss']).mean().item()
 
         # TODO: generalize to other tasks
@@ -215,13 +221,32 @@ class W2V2Downstream(LightningModule):
         self.eval_records = defaultdict(list)
 
     def test_step(self, batch, batch_idx):
-        
-        loss = 0
+        (wavs, *others) = batch
 
-        return {"test_loss": loss}
+        features = self(wavs)
+
+        self.downstream(
+            self.test_split,
+            features, *others,
+            records=self.test_records
+        )
         
     def test_epoch_end(self, test_step_outputs):
-        pass
+        loss = torch.FloatTensor(self.test_records['loss']).mean().item()
+
+        # TODO: generalize to other tasks
+        uer, wer = self.downstream._compute_metrics(
+            self.test_records['target_tokens'],
+            self.test_records['target_words'],
+            self.test_records['pred_tokens'],
+            self.test_records['pred_words'],
+        )
+
+        self.log("test_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
+        self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
+        self.log("uer", uer, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
+
+        self.test_records = defaultdict(list)
 
     def train_dataloader(self):
         # epoch = self.init_ckpt.get('Epoch', 0)
@@ -244,8 +269,8 @@ class W2V2Downstream(LightningModule):
         return dataloader
 
     def test_dataloader(self):
-
-        return
+        dataloader = self.downstream.get_dataloader(self.test_split)
+        return dataloader
 
     def get_progress_bar_dict(self):
         tqdm_dict = super().get_progress_bar_dict()
