@@ -211,6 +211,7 @@ class TransformerEncoder(nn.Module):
         if not args.enable_tr_layer:
             tr_layer = None
         else:
+            self.tr_reduce_factor = args.tr_reduce_factor
             if args.type_of_tr_layer == 'fc1':
                 # Input length will be verified first.
                 tr_layer = nn.Linear(
@@ -309,11 +310,25 @@ class TransformerEncoder(nn.Module):
                     x = self.concat_channelwise(x)
                     x = layer(x)
                     tr_layer_results.append(x)
+
+                    # time-reduce padding mask
+                    if padding_mask is not None:
+                        sp = padding_mask.split(self.tr_reduce_factor, 1)
+                        if padding_mask.shape[-1] % self.tr_reduce_factor != 0:
+                            sp = sp[:-1]
+                        padding_mask = torch.stack(sp).any(-1).transpose(0,1)
                 elif isinstance(layer, nn.Conv1d):
                     x = x.permute(1, 2, 0).contiguous()
                     x = layer(x)
                     x = x.permute(2, 0, 1).contiguous()
                     tr_layer_results.append(x)
+
+                    # time-reduce padding mask
+                    if padding_mask is not None:
+                        sp = padding_mask.split(self.tr_reduce_factor, 1)
+                        if padding_mask.shape[-1] % self.tr_reduce_factor != 0:
+                            sp = sp[:-1]
+                        padding_mask = torch.stack(sp).any(-1).transpose(0,1)
                 else:
                     x, (z, lr) = layer(
                         x, self_attn_padding_mask=padding_mask, need_weights=False
