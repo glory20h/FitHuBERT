@@ -62,9 +62,14 @@ class W2V2Distil(LightningModule):
                 bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
                 setattr(layer, 'forward', bound_method)
             for layer in self.student_model.encoder.layers:
-                layer.self_attn._set_skip_embed_dim_check()
-                bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
-                setattr(layer, 'forward', bound_method)
+                if self.cfg['distiller']['layer_type'] == 'conformer':
+                    layer.self_attn._set_skip_embed_dim_check()
+                    bound_method = con_rtrn_attn_forward.__get__(layer, layer.__class__)
+                    setattr(layer, 'forward', bound_method)
+                else:
+                    layer.self_attn._set_skip_embed_dim_check()
+                    bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
+                    setattr(layer, 'forward', bound_method)
 
         if self.train_cfg['no_projections']:
             self.student_model._disable_projection_heads()

@@ -216,7 +216,7 @@ def rtrn_attn_forward(
         attn = torch.bmm(attn_probs, v)
         attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         x = self.self_attn.out_proj(attn)
-        
+
         attn = attn_logits
         v_rel = torch.bmm(v * self.self_attn.scaling, v.transpose(1, 2))
 
@@ -269,4 +269,90 @@ def rtrn_attn_forward(
         x = residual + x
         x = self.final_layer_norm(x)
 
+    return x, ((attn, v_rel), layer_result)
+
+
+def con_rtrn_attn_forward(
+    self,
+    x: torch.Tensor,
+    self_attn_mask: torch.Tensor = None,
+    self_attn_padding_mask: torch.Tensor = None,
+    need_weights: bool = True,
+    att_args=None,
+    position_emb=None,
+):
+    """
+    Args:
+        x: Tensor of shape T X B X C
+        self_attn_padding_mask: Optional mask tensor
+        positions:
+    Returns:
+        Tensor of shape T X B X C
+    """
+    residual = x
+    x = self.ffn1(x)
+    x = x * 0.5 + residual
+    residual = x
+    x = self.self_attn_layer_norm(x)
+    tgt_len, bsz, embed_dim = x.size()
+
+    if self.pos_enc_type == "rel_pos":
+        attn_logits, v = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            pos_emb=position_emb,
+            before_softmax=True,
+        )
+        attn_weights_float = F.softmax(
+            attn_logits, dim=-1
+        )
+        attn_weights = attn_weights_float.type_as(attn_logits)
+        attn_probs = self.self_attn.dropout_module(attn_weights)
+        attn = torch.bmm(attn_probs, v)
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        x = self.self_attn.out_proj(attn)
+
+        attn = attn_logits
+        v_rel = torch.bmm(v * self.self_attn.scaling, v.transpose(1, 2))
+    else:
+        attn_logits, v = self.self_attn(
+            query=x,
+            key=x,
+            value=x,
+            key_padding_mask=self_attn_padding_mask,
+            before_softmax=True,
+        )
+        attn_weights_float = F.softmax(
+            attn_logits, dim=-1
+        )
+        attn_weights = attn_weights_float.type_as(attn_logits)
+        attn_probs = self.self_attn.dropout_module(attn_weights)
+        attn = torch.bmm(attn_probs, v)
+        attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+        x = self.self_attn.out_proj(attn)
+
+        attn = attn_logits
+        v_rel = torch.bmm(v * self.self_attn.scaling, v.transpose(1, 2))
+        
+    x = self.self_attn_dropout(x)
+    x = x + residual
+
+    residual = x
+    # TBC to BTC
+    x = x.transpose(0, 1)
+    x = self.conv_module(x)
+    # BTC to TBC
+    x = x.transpose(0, 1)
+    x = residual + x
+
+    residual = x
+    x = self.ffn2(x)
+
+    layer_result = x
+
+    x = x * 0.5 + residual
+
+    x = self.final_layer_norm(x)
     return x, ((attn, v_rel), layer_result)
