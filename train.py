@@ -54,6 +54,7 @@ class W2V2Distil(LightningModule):
         self.sim_loss_weight = self.train_cfg['sim_loss_weight']
         self.attn_loss_weight = self.train_cfg['attn_loss_weight']
         self.attn_loss_type = self.train_cfg['attn_loss_type']
+        self.v_rel_loss_weight = self.train_cfg['v_rel_loss_weight']
 
         if self.attn_loss_weight > 0:
             for layer in self.teacher_model.model.encoder.layers:
@@ -216,14 +217,9 @@ class W2V2Distil(LightningModule):
             ], dim=1)
         else:
             pred = student_results['projections']
-        target = teacher_hiddens.narrow(2, 0, pred.shape[2])
+        target = teacher_hiddens[:, :, :pred.shape[2]]
         
-        if self.rec_loss_type == 'l1':
-            rec_loss = F.l1_loss(pred, target, reduction="none")
-        elif self.rec_loss_type == 'mse':
-            rec_loss = F.mse_loss(pred, target, reduction="none")
-        else:
-            raise NotImplementedError("rec_loss_type must be one of 'l1', 'mse'.")
+        rec_loss = F.l1_loss(pred, target, reduction="none")
         with torch.no_grad():
             rec_layer_loss = rec_loss.mean((0, 2, 3))
             
@@ -245,8 +241,8 @@ class W2V2Distil(LightningModule):
 
         # Attention distribution transfer loss
         if self.attn_loss_weight > 0:
-            pred = student_results['layer_results'][-1][1]
-            target = teacher_results['layer_results'][-1][1][0]
+            pred = student_results['layer_results'][-1][1][0]
+            target = teacher_results['layer_results'][-1][1][0][0]
 
             if self.attn_loss_type == 'mse':
                 loss = F.mse_loss(
@@ -273,11 +269,27 @@ class W2V2Distil(LightningModule):
             losses['attn_loss'] = attn_loss
         else:
             attn_loss = 0
+
+        # Value Relation Transfer Loss
+        if self.v_rel_loss_weight > 0:
+            pred = student_results['layer_results'][-1][1][1]
+            target = teacher_results['layer_results'][-1][1][0][1]
+            loss = F.kl_div(
+                F.log_softmax(pred, dim=-1), 
+                F.softmax(target, dim=-1), 
+                reduction='none',
+            )
+            v_rel_loss = loss.sum(dim=-1).mean()
+            
+            losses['v_rel_loss'] = v_rel_loss
+        else:
+            v_rel_loss = 0
             
         total_loss = (
             self.rec_loss_weight * rec_loss
             + self.sim_loss_weight * sim_loss 
             + self.attn_loss_weight * attn_loss
+            + self.v_rel_loss_weight * v_rel_loss
         )
 
         if not self.task_agnostic:
@@ -397,7 +409,7 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=gpus,
         strategy="ddp",
-        # amp_backend="apex",
+        amp_backend="apex",
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,

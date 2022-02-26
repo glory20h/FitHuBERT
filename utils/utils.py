@@ -216,7 +216,9 @@ def rtrn_attn_forward(
         attn = torch.bmm(attn_probs, v)
         attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         x = self.self_attn.out_proj(attn)
+        
         attn = attn_logits
+        v_rel = torch.bmm(v * self.self_attn.scaling, v.transpose(1, 2))
 
         x = self.dropout1(x)
         x = residual + x
@@ -247,7 +249,9 @@ def rtrn_attn_forward(
         attn = torch.bmm(attn_probs, v)
         attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         x = self.self_attn.out_proj(attn)
+
         attn = attn_logits
+        v_rel = torch.bmm(v * self.self_attn.scaling, v.transpose(1, 2))
 
         x = self.dropout1(x)
         x = residual + x
@@ -265,4 +269,4 @@ def rtrn_attn_forward(
         x = residual + x
         x = self.final_layer_norm(x)
 
-    return x, (attn, layer_result)
+    return x, ((attn, v_rel), layer_result)
