@@ -273,7 +273,7 @@ class CustomStudentModel(BaseFairseqModel):
             nn.Linear(cfg.encoder_embed_dim, pred_head_inter_dim * self.n_tasks),
             nn.GELU(),
             SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
-        )
+        ) if self.n_tasks > 0 else None
 
     def _get_feat_extract_output_lengths(self, input_lengths: torch.LongTensor):
         """
