@@ -226,9 +226,9 @@ class W2V2Distil(LightningModule):
                 pred = student_results['projections']
             target = teacher_hiddens.narrow(2, 0, pred.shape[2])
             
-            if rec_loss_type == 'l1':
+            if self.rec_loss_type == 'l1':
                 rec_loss = F.l1_loss(pred, target, reduction="none")
-            elif rec_loss_type == 'mse':
+            elif self.rec_loss_type == 'mse':
                 rec_loss = F.mse_loss(pred, target, reduction="none")
             else:
                 raise NotImplementedError("rec_loss_type must be one of 'l1', 'mse'.")
