@@ -229,8 +229,7 @@ class W2V2Distil(LightningModule):
         
         rec_loss = F.l1_loss(pred, target, reduction="none")
         with torch.no_grad():
-            rec_layer_loss = rec_loss.mean((0, 2, 3))
-            
+            rec_layer_loss = rec_loss.mean((0, 2, 3)) 
         rec_loss = rec_loss.mean()
         
         if self.sim_loss_weight > 0:
@@ -249,8 +248,7 @@ class W2V2Distil(LightningModule):
 
         # CNN post projection loss
         if self.cnn_loss_weight > 0:
-
-            cnn_loss = F.cosine_similarity(student_results["features"], teacher_results["features"][0], dim = 2)
+            cnn_loss = F.l1_loss(student_results["features"], teacher_results["features"][0], reduction="none")
             cnn_loss = cnn_loss.mean()
             losses['cnn_loss'] = cnn_loss
         else:
@@ -441,3 +439,4 @@ if __name__ == '__main__':
     else:
         trainer.fit(model)
 
+ 
