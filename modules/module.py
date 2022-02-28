@@ -212,6 +212,7 @@ class TransformerEncoder(nn.Module):
             tr_layer = None
         else:
             self.tr_reduce_factor = args.tr_reduce_factor
+            self.tr_fc_output_factor = self.tr_reduce_factor
             if args.type_of_tr_layer == 'fc1':
                 # Input length will be verified first.
                 tr_layer = nn.Linear(
@@ -370,7 +371,7 @@ class TransformerEncoder(nn.Module):
             x = torch.cat([x, zero_pad], dim = 0)
         time_length += how_many_pad
 
-        result = torch.tensor([]).cuda()
+        result = torch.tensor([])
         
         j = 0
         while (j < self.tr_fc_output_factor):

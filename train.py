@@ -55,6 +55,8 @@ class W2V2Distil(LightningModule):
         self.attn_loss_weight = self.train_cfg['attn_loss_weight']
         self.attn_loss_type = self.train_cfg['attn_loss_type']
         self.v_rel_loss_weight = self.train_cfg['v_rel_loss_weight']
+        self.cnn_loss_weight = self.train_cfg['cnn_loss_weight']
+
 
         if self.attn_loss_weight > 0:
             for layer in self.teacher_model.model.encoder.layers:
@@ -62,7 +64,7 @@ class W2V2Distil(LightningModule):
                 bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
                 setattr(layer, 'forward', bound_method)
             for layer in self.student_model.encoder.layers:
-                if self.yaml_cfg['distiller']['layer_type'] == 'conformer':
+                if self.cfg['distiller']['layer_type'] == 'conformer':
                     layer.self_attn._set_skip_embed_dim_check()
                     bound_method = con_rtrn_attn_forward.__get__(layer, layer.__class__)
                     setattr(layer, 'forward', bound_method)
@@ -119,6 +121,7 @@ class W2V2Distil(LightningModule):
         # -> RETURNS: {
         #     "x": (B x T x D) (encoder output),
         #     "layer_results": [x, (attn, lr)] x #layers,
+        #     "features": [features]
         # }
 
         student_results = self.student_model(
@@ -128,7 +131,7 @@ class W2V2Distil(LightningModule):
         # -> RETURNS: {
         #     "x": x,
         #     "padding_mask": padding_mask,
-        #     "features": features,
+        #     "features": features after post projector,
         #     "layer_results": layer_results,
         #     "tr_layer_results": tr_layer_results,
         #     "projections": projections
@@ -207,38 +210,28 @@ class W2V2Distil(LightningModule):
     def calculate_loss(self, student_results, teacher_results, labels=None):
         # TODO: move calculate_loss to utils?
         losses = {}
-    
-        # Feature loss
-        if self.rec_loss_weight > 0:
-            teacher_hiddens = [
-                teacher_results["layer_results"][i][0].transpose(0, 1)
+
+        teacher_hiddens = [
+            teacher_results["layer_results"][i][0].transpose(0, 1)
+            for i in self.student_model.pred_layer_id
+        ]
+        
+        teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
+        
+        if self.train_cfg['no_projections']:
+            pred = torch.stack([
+                student_results["layer_results"][-1][0].transpose(0, 1)
                 for i in self.student_model.pred_layer_id
-            ]
-            
-            teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
-            
-            if self.train_cfg['no_projections']:
-                pred = torch.stack([
-                    student_results["layer_results"][-1][0].transpose(0, 1)
-                    for i in self.student_model.pred_layer_id
-                ], dim=1)
-            else:
-                pred = student_results['projections']
-            target = teacher_hiddens.narrow(2, 0, pred.shape[2])
-            
-            if self.rec_loss_type == 'l1':
-                rec_loss = F.l1_loss(pred, target, reduction="none")
-            elif self.rec_loss_type == 'mse':
-                rec_loss = F.mse_loss(pred, target, reduction="none")
-            else:
-                raise NotImplementedError("rec_loss_type must be one of 'l1', 'mse'.")
-            with torch.no_grad():
-                rec_layer_loss = rec_loss.mean((0, 2, 3))
-                
-            rec_loss = rec_loss.mean()
+            ], dim=1)
         else:
-            rec_loss = 0
-            rec_layer_loss = 0
+            pred = student_results['projections']
+        target = teacher_hiddens[:, :, :pred.shape[2]]
+        
+        rec_loss = F.l1_loss(pred, target, reduction="none")
+        with torch.no_grad():
+            rec_layer_loss = rec_loss.mean((0, 2, 3))
+            
+        rec_loss = rec_loss.mean()
         
         if self.sim_loss_weight > 0:
             sim_loss = -F.logsigmoid(F.cosine_similarity(pred, target, dim=-1))
@@ -253,6 +246,16 @@ class W2V2Distil(LightningModule):
         
         for i, pred_id in enumerate(self.student_model.pred_layer_id):
             losses[f'layer{pred_id}'] = feat_loss[i]
+
+        # CNN post projection loss
+        if self.cnn_loss_weight > 0:
+
+            cnn_loss = F.cosine_similarity(student_results["features"], teacher_results["features"][0], dim = 2)
+            cnn_loss = cnn_loss.mean()
+            losses['cnn_loss'] = cnn_loss
+        else:
+            cnn_loss = 0
+
 
         # Attention distribution transfer loss
         if self.attn_loss_weight > 0:
@@ -305,6 +308,7 @@ class W2V2Distil(LightningModule):
             + self.sim_loss_weight * sim_loss 
             + self.attn_loss_weight * attn_loss
             + self.v_rel_loss_weight * v_rel_loss
+            + self.cnn_loss_weight * cnn_loss
         )
 
         if not self.task_agnostic:
@@ -387,7 +391,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    YAML_PATH = args.config or './data/distiller/ex.yaml'
+    YAML_PATH = args.config or './data/conf/ex.yaml'
     with open(YAML_PATH) as f:
         YAML_CFG = yaml.load(f, Loader = yaml.FullLoader)
 
@@ -424,7 +428,7 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=gpus,
         strategy="ddp",
-        # amp_backend="apex",
+        amp_backend="apex",
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,
