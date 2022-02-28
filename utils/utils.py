@@ -59,7 +59,8 @@ class TeacherWrapper(nn.Module):
         """
         super().__init__()
         self.model = model
-        self._hook_hiddens = []
+        self._hook_layer_hiddens = []
+        self._hook_post_cnn = []
 
         def generate_hook_handler(hiddens: List):
             def hook_handler(self, input, output):
@@ -67,13 +68,17 @@ class TeacherWrapper(nn.Module):
 
             return hook_handler
 
+        self.model.post_extract_proj.register_forward_hook(
+                generate_hook_handler(self._hook_post_cnn)
+            )
+
         for module in self.model.encoder.layers:
             module.register_forward_hook(
-                generate_hook_handler(self._hook_hiddens) # -> but is it absolutely needed?
+                generate_hook_handler(self._hook_layer_hiddens) # -> but is it absolutely needed?
             )
 
     def extract_features(self, source, padding_mask):
-        self._hook_hiddens.clear()
+        self._hook_layer_hiddens.clear()
         result = {}
 
         self.model.extract_features(
@@ -82,11 +87,14 @@ class TeacherWrapper(nn.Module):
             mask=None,
         )
 
-        hook_hiddens = self._hook_hiddens.copy()
-        self._hook_hiddens.clear()
+        hook_layer_hiddens = self._hook_layer_hiddens.copy()
+        self._hook_layer_hiddens.clear()
+        hook_post_cnn = self._hook_post_cnn.copy()
+        self._hook_post_cnn.clear()
 
-        result['layer_results'] = hook_hiddens
+        result['layer_results'] = hook_layer_hiddens
         result['x'] = result['layer_results'][-1][0].transpose(0, 1)
+        result['features'] = hook_post_cnn
 
         return result
 
