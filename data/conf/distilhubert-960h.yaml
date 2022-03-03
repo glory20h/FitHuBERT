@@ -12,12 +12,15 @@ train:
   accumulate_grad_batches: 4
   use_fp16: True
   monitor_losses: True
+  cnn_loss_weight: 0
   rec_loss_weight: 1.0
   rec_loss_type: l1
   sim_loss_weight: 1.0
   attn_loss_weight: 0
   attn_loss_type: kldiv
+  v_rel_loss_weight: 0
   no_projections: False
+  specaug: False
   use_gt_for_ctc: True
 
 distiller:
@@ -71,7 +74,7 @@ distiller:
   tr_conv1d_kernel_stride: (2, 2)
   tr_layer_index: 1
   tr_reduce_factor: 2
-  type_of_tr_layer: fc2
+  type_of_tr_layer: conv1d
   
   # Other
   checkpoint_activations: False
@@ -91,3 +94,17 @@ data:
   libri_root: '../LibriSpeech'
   train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
   test_set: ['test-clean']
+
+specaug:
+  adaptive: false
+  adaptive_number_ratio: 0.04
+  adaptive_size_ratio: 0.04
+  max_n_time_masks: 20
+  apply_time_warp: true
+  apply_time_mask: true
+  apply_freq_mask: true
+  time_warp_window: 5
+  time_mask_width_range: [0, 40]
+  freq_mask_width_range: [0, 50]
+  num_freq_mask: 4
+  num_time_mask: 2

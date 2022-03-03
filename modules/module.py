@@ -212,7 +212,6 @@ class TransformerEncoder(nn.Module):
             tr_layer = None
         else:
             self.tr_reduce_factor = args.tr_reduce_factor
-            self.tr_fc_output_factor = self.tr_reduce_factor
             if args.type_of_tr_layer == 'fc1':
                 # Input length will be verified first.
                 tr_layer = nn.Linear(
@@ -222,7 +221,6 @@ class TransformerEncoder(nn.Module):
                 nn.init.xavier_uniform_(tr_layer.weight)
 
             elif args.type_of_tr_layer == 'fc2':
-                self.tr_reduce_factor = args.tr_reduce_factor
                 tr_layer = nn.Sequential(
                     nn.Linear(self.embedding_dim * args.tr_reduce_factor, self.embedding_dim * args.tr_reduce_factor),
                     nn.GELU(),
@@ -230,12 +228,11 @@ class TransformerEncoder(nn.Module):
                 )
                 
             elif args.type_of_tr_layer == 'conv1d':
-                (kernel, stride) = eval(args.tr_conv1d_kernel_stride)
                 tr_layer = nn.Conv1d(
                     self.embedding_dim,
                     self.embedding_dim,
-                    kernel_size=kernel,
-                    stride=stride
+                    kernel_size=args.tr_reduce_factor,
+                    stride=args.tr_reduce_factor
                 )
             
             else:
@@ -273,7 +270,6 @@ class TransformerEncoder(nn.Module):
         tgt_layer=None,
         min_layer=0,
     ):
-
         if padding_mask is not None:
             x = index_put(x, padding_mask, 0)
 
@@ -364,7 +360,7 @@ class TransformerEncoder(nn.Module):
     def concat_channelwise(self, x):
         # x is shaped T x B x C
         time_length, batch, channel = x.size()
-        how_many_pad = self.tr_fc_output_factor - time_length % self.tr_fc_output_factor 
+        how_many_pad = self.tr_reduce_factor - time_length % self.tr_reduce_factor 
         if how_many_pad != 0:
             # zero_pad = torch.zeros([how_many_pad, batch, channel]).cuda()
             zero_pad = torch.zeros([how_many_pad, batch, channel])
@@ -374,9 +370,9 @@ class TransformerEncoder(nn.Module):
         result = torch.tensor([])
         
         j = 0
-        while (j < self.tr_fc_output_factor):
+        while (j < self.tr_reduce_factor):
             # (T / factor) X B x (C * factor)
-            tensor_to_concat = x[j::self.tr_fc_output_factor,:,:]
+            tensor_to_concat = x[j::self.tr_reduce_factor,:,:]
             result = torch.cat([result, tensor_to_concat], dim = 2)
             j += 1
         # (T / factor) X B X (C * factor)

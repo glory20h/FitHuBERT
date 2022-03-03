@@ -46,11 +46,13 @@ train:
   output_dir: 'distil'
   checkpoint:
   num_epochs: 100
+  cnn_loss_weight: 1.0
   rec_loss_weight: 1.0
   rec_loss_type: l1
   sim_loss_weight: 1.0
   attn_loss_weight: 0
   attn_loss_type: 'kldiv'
+  v_rel_loss_weight: 1.0
   gpus: 2
   batch_size: 4
   accumulate_grad_batches: 3
@@ -58,6 +60,7 @@ train:
   monitor_losses: True
   use_gt_for_ctc: True
   no_projections: False
+  specaug: False
 
 optimizer:
   name: AdamW_with_schedule
@@ -73,3 +76,17 @@ data:
   # train_set: ['train-clean-100']
   train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
   test_set: ['test-clean']
+
+specaug:
+  adaptive: false
+  adaptive_number_ratio: 0.04
+  adaptive_size_ratio: 0.04
+  max_n_time_masks: 20
+  apply_time_warp: true
+  apply_time_mask: true
+  apply_freq_mask: true
+  time_warp_window: 5
+  time_mask_width_range: [0, 40]
+  freq_mask_width_range: [0, 50]
+  num_freq_mask: 4
+  num_time_mask: 2

@@ -35,8 +35,8 @@ class W2V2Distil(LightningModule):
         freeze_model(self.teacher_model)
 
         # Make student config independent of teacher
-        distiller_cfg = self.yaml_cfg['distiller']
-        student_config = CustomStudentModelConfig(**distiller_cfg)
+        model_cfg = self.yaml_cfg['distiller']
+        student_config = CustomStudentModelConfig(**model_cfg)
         student_config.teacher_task_agnostic = self.task_agnostic
 
         # TODO: how to make it save only once?
@@ -49,22 +49,22 @@ class W2V2Distil(LightningModule):
             teacher_model=self.teacher_model
         )
 
+        self.cnn_loss_weight = self.train_cfg['cnn_loss_weight']
         self.rec_loss_weight = self.train_cfg['rec_loss_weight']
         self.rec_loss_type = self.train_cfg['rec_loss_type']
         self.sim_loss_weight = self.train_cfg['sim_loss_weight']
         self.attn_loss_weight = self.train_cfg['attn_loss_weight']
         self.attn_loss_type = self.train_cfg['attn_loss_type']
         self.v_rel_loss_weight = self.train_cfg['v_rel_loss_weight']
-        self.cnn_loss_weight = self.train_cfg['cnn_loss_weight']
-
 
         if self.attn_loss_weight > 0:
+            # TODO: move code below into train.py
             for layer in self.teacher_model.model.encoder.layers:
                 layer.self_attn._set_skip_embed_dim_check()
                 bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
                 setattr(layer, 'forward', bound_method)
             for layer in self.student_model.encoder.layers:
-                if self.cfg['distiller']['layer_type'] == 'conformer':
+                if self.yaml_cfg['distiller']['layer_type'] == 'conformer':
                     layer.self_attn._set_skip_embed_dim_check()
                     bound_method = con_rtrn_attn_forward.__get__(layer, layer.__class__)
                     setattr(layer, 'forward', bound_method)
@@ -75,6 +75,11 @@ class W2V2Distil(LightningModule):
 
         if self.train_cfg['no_projections']:
             self.student_model._disable_projection_heads()
+
+        if self.train_cfg['specaug']:
+            from utils.specaug import SpecAug
+            specaug = SpecAug(**self.yaml_cfg['specaug'])
+            self.student_model.add_specaug(specaug)
 
         self.batch_size = self.train_cfg['batch_size']
         self.num_gpus = self.train_cfg['gpus']
@@ -211,26 +216,44 @@ class W2V2Distil(LightningModule):
         # TODO: move calculate_loss to utils?
         losses = {}
 
-        teacher_hiddens = [
-            teacher_results["layer_results"][i][0].transpose(0, 1)
-            for i in self.student_model.pred_layer_id
-        ]
-        
-        teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
-        
-        if self.train_cfg['no_projections']:
-            pred = torch.stack([
-                student_results["layer_results"][-1][0].transpose(0, 1)
-                for i in self.student_model.pred_layer_id
-            ], dim=1)
+        # CNN post projection loss
+        if self.cnn_loss_weight > 0:
+            cnn_loss = F.l1_loss(student_results["features"], teacher_results["features"][0], reduction="none")
+            cnn_loss = cnn_loss.mean()
+            losses['cnn_loss'] = cnn_loss
         else:
-            pred = student_results['projections']
-        target = teacher_hiddens[:, :, :pred.shape[2]]
+            cnn_loss = 0
+
+        # Feature loss
+        if self.rec_loss_weight > 0:
+            teacher_hiddens = [
+                teacher_results["layer_results"][i][0].transpose(0, 1)
+                for i in self.student_model.pred_layer_id
+            ]
+            
+            teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
+            
+            if self.train_cfg['no_projections']:
+                pred = torch.stack([
+                    student_results["layer_results"][-1][0].transpose(0, 1)
+                    for i in self.student_model.pred_layer_id
+                ], dim=1)
+            else:
+                pred = student_results['projections']
+            target = teacher_hiddens.narrow(2, 0, pred.shape[2])
         
-        rec_loss = F.l1_loss(pred, target, reduction="none")
-        with torch.no_grad():
-            rec_layer_loss = rec_loss.mean((0, 2, 3)) 
-        rec_loss = rec_loss.mean()
+            if self.rec_loss_type == 'l1':
+                rec_loss = F.l1_loss(pred, target, reduction="none")
+            elif self.rec_loss_type == 'mse':
+                rec_loss = F.mse_loss(pred, target, reduction="none")
+            else:
+                raise NotImplementedError("rec_loss_type must be one of 'l1', 'mse'.")
+            with torch.no_grad():
+                rec_layer_loss = rec_loss.mean((0, 2, 3)) 
+            rec_loss = rec_loss.mean()
+        else:
+            rec_loss = 0
+            rec_layer_loss = 0
         
         if self.sim_loss_weight > 0:
             sim_loss = -F.logsigmoid(F.cosine_similarity(pred, target, dim=-1))
@@ -245,15 +268,6 @@ class W2V2Distil(LightningModule):
         
         for i, pred_id in enumerate(self.student_model.pred_layer_id):
             losses[f'layer{pred_id}'] = feat_loss[i]
-
-        # CNN post projection loss
-        if self.cnn_loss_weight > 0:
-            cnn_loss = F.l1_loss(student_results["features"], teacher_results["features"][0], reduction="none")
-            cnn_loss = cnn_loss.mean()
-            losses['cnn_loss'] = cnn_loss
-        else:
-            cnn_loss = 0
-
 
         # Attention distribution transfer loss
         if self.attn_loss_weight > 0:
@@ -426,7 +440,7 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=gpus,
         strategy="ddp",
-        amp_backend="apex",
+        # amp_backend="apex",
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,

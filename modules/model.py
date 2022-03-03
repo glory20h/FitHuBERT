@@ -211,6 +211,7 @@ class CustomStudentModel(BaseFairseqModel):
         self, 
         cfg: CustomStudentModelConfig,
         teacher_model=None,
+        **kwargs,
     ):
         super().__init__()
         self.cfg = cfg
@@ -273,7 +274,12 @@ class CustomStudentModel(BaseFairseqModel):
             nn.Linear(cfg.encoder_embed_dim, pred_head_inter_dim * self.n_tasks),
             nn.GELU(),
             SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
-        )
+        ) if self.n_tasks > 0 else None
+        
+        self.specaug = None
+
+    def add_specaug(self, specaug):
+        self.specaug = specaug
 
     def _get_feat_extract_output_lengths(self, input_lengths: torch.LongTensor):
         """
@@ -347,7 +353,12 @@ class CustomStudentModel(BaseFairseqModel):
         # Need to implement prediction head for dimension mistmatch
         features_to_distill = features
 
-        features = self.dropout_input(features)
+        # Apply SpecAug on extracted features
+        if self.specaug:
+            feats, _ = self.specaug(features)
+            features = torch.stack(feats)
+        else:
+            features = self.dropout_input(features)
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
