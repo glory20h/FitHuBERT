@@ -174,6 +174,11 @@ class CustomStudentModelConfig(FairseqDataclass):
         metadata={"help": "Layer index to predict by prediction heads"}
     )
 
+    layerwise_proj: bool = field(
+        default=False,
+        metadata={"help": "Whether to use layer-wise projection for distillation"}
+    )
+
     # Time-reduction Layer
     enable_tr_layer: bool = field(
         default=True,
@@ -261,6 +266,7 @@ class CustomStudentModel(BaseFairseqModel):
         self.n_tasks = len(self.pred_layer_id)
 
         self.enable_tr_layer = cfg.enable_tr_layer
+        self.upsampler = None
         if cfg.enable_tr_layer:
             self.upsampler = torch.nn.ConvTranspose1d(
                 in_channels=cfg.encoder_embed_dim,
@@ -269,11 +275,18 @@ class CustomStudentModel(BaseFairseqModel):
                 stride=cfg.tr_reduce_factor,
             )
 
-        self.proj_head = nn.Sequential(
-            nn.Linear(cfg.encoder_embed_dim, pred_head_inter_dim * self.n_tasks),
-            nn.GELU(),
-            SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
-        ) if self.n_tasks > 0 else None
+        self.layerwise_proj = cfg.layerwise_proj
+        if cfg.layerwise_proj:
+            # (Naive) Layer-wise projection
+            # TODO: Try split version vs single version
+            self.proj_head = SplitLinear(cfg.encoder_embed_dim, self.n_tasks, pred_head_final_dim)
+        else:
+            # DistilHuBERT style projection
+            self.proj_head = nn.Sequential(
+                nn.Linear(cfg.encoder_embed_dim, pred_head_inter_dim * self.n_tasks),
+                nn.GELU(),
+                SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
+            ) if self.n_tasks > 0 else None
         
         self.specaug = None
 
@@ -299,6 +312,14 @@ class CustomStudentModel(BaseFairseqModel):
 
     def _disable_projection_heads(self):
         self.proj_head = None
+
+    def _upsample(self, x):
+        if self.upsampler:
+            x = x.transpose(1,2)
+            x = self.upsampler(x)
+            x = x.transpose(1,2)
+
+        return x
 
     def forward(
         self,
@@ -361,16 +382,21 @@ class CustomStudentModel(BaseFairseqModel):
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
         if self.enable_tr_layer:
-            x = x.transpose(1,2)
-            x = self.upsampler(x)
-            x = x.transpose(1,2)
+            x = self._upsample(x)
 
         # Get output from projection heads
         if self.proj_head:
-            b_sz, t_sz, _ = x.shape
-            pred = self.proj_head(x).reshape(b_sz, 1, t_sz, -1)
+            out = x
+            if self.layerwise_proj:
+                out = torch.cat([
+                    # TODO: verify if using single upsampler for all layer represenatations is better
+                    self._upsample(layer_results[i][0].transpose(0, 1))
+                    for i in self.pred_layer_id
+                ], dim=-1)
+            b_sz, t_sz, _ = out.shape
+            pred = self.proj_head(out)
             projections = (
-                pred.squeeze(1)
+                pred
                 .reshape(b_sz, t_sz, self.n_tasks, -1)
                 .permute(0, 2, 1, 3)
             ) # B x N x T x D

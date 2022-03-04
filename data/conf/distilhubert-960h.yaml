@@ -63,6 +63,7 @@ distiller:
   pred_head_inter_dim: 0
 
   # Task & loss
+  layerwise_proj: False
   pred_layer_id: '[3, 7, 11]'
 
   # Initialization
