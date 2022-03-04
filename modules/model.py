@@ -262,12 +262,11 @@ class CustomStudentModel(BaseFairseqModel):
 
         self.enable_tr_layer = cfg.enable_tr_layer
         if cfg.enable_tr_layer:
-            (kernel, stride) = eval(cfg.tr_conv1d_kernel_stride)
             self.upsampler = torch.nn.ConvTranspose1d(
                 in_channels=cfg.encoder_embed_dim,
                 out_channels=cfg.encoder_embed_dim,
-                kernel_size=kernel,
-                stride=stride,
+                kernel_size=cfg.tr_reduce_factor,
+                stride=cfg.tr_reduce_factor,
             )
 
         self.proj_head = nn.Sequential(
@@ -300,7 +299,6 @@ class CustomStudentModel(BaseFairseqModel):
 
     def _disable_projection_heads(self):
         self.proj_head = None
-        self.upsampler = None
 
     def forward(
         self,
@@ -362,15 +360,15 @@ class CustomStudentModel(BaseFairseqModel):
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
+        if self.enable_tr_layer:
+            x = x.transpose(1,2)
+            x = self.upsampler(x)
+            x = x.transpose(1,2)
+
         # Get output from projection heads
         if self.proj_head:
-            out = x
-            if self.enable_tr_layer:
-                out = x.transpose(1,2)
-                out = self.upsampler(out)
-                out = out.transpose(1,2)
-            b_sz, t_sz, _ = out.shape
-            pred = self.proj_head(out).reshape(b_sz, 1, t_sz, -1)
+            b_sz, t_sz, _ = x.shape
+            pred = self.proj_head(x).reshape(b_sz, 1, t_sz, -1)
             projections = (
                 pred.squeeze(1)
                 .reshape(b_sz, t_sz, self.n_tasks, -1)
