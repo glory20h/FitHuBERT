@@ -413,6 +413,7 @@ if __name__ == '__main__':
     gpus = YAML_CFG['train']['gpus']
     num_epochs = YAML_CFG['train']['num_epochs']
     use_fp16 = 16 if YAML_CFG['train']['use_fp16'] else 32
+    use_apex = 'apex' if YAML_CFG['train']['use_apex'] else 'native'
     accumulate_grad_batches = YAML_CFG['train']['accumulate_grad_batches']
 
     model = W2V2Distil(cfg = YAML_CFG)
@@ -440,7 +441,7 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=gpus,
         strategy="ddp",
-        # amp_backend="apex",
+        amp_backend=use_apex,
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,

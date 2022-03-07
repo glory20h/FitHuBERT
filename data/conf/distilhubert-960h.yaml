@@ -11,6 +11,7 @@ train:
   batch_size: 3
   accumulate_grad_batches: 4
   use_fp16: True
+  use_apex: False
   monitor_losses: True
   cnn_loss_weight: 0
   rec_loss_weight: 1.0

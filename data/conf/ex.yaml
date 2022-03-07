@@ -58,6 +58,7 @@ train:
   batch_size: 4
   accumulate_grad_batches: 3
   use_fp16: True
+  use_apex: False
   monitor_losses: True
   use_gt_for_ctc: True
   no_projections: False
