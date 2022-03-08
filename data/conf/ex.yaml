@@ -1,5 +1,6 @@
+#158.85
 teacher:
-  teacher_model: 'hubert_base_ls960.pt'
+  teacher_model: '../parameters/hubert_base_ls960.pt'
   # teacher_model: 'wav2vec_small.pt'
 
 distiller:
@@ -9,7 +10,7 @@ distiller:
   attn_type: ''
   checkpoint_activations: False
   conv_bias: False
-  conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] * 2'
+  conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512, 2, 2)] * 2'
   conv_pos: 128
   conv_pos_groups: 16
   crop_seq_to_multiple: 1
@@ -26,10 +27,12 @@ distiller:
   feature_grad_mult: 0.1
   final_dim: 256
   fp16: True
-  init_conv_layers: True
+  n_mels: 80
+  init_conv_layers: False
   init_encoder_layers: 2
   layer_norm_first: False
   layer_type: transformer
+  layerwise_proj: False
   max_positions: 100000
   pos_conv_depth: 1
   pos_enc_type: abs
@@ -43,18 +46,18 @@ distiller:
   type_of_tr_layer: fc2
 
 train:
-  output_dir: 'distil'
+  output_dir: 'mel80-copy'
   checkpoint:
   num_epochs: 100
-  cnn_loss_weight: 1.0
+  cnn_loss_weight: 0
   rec_loss_weight: 1.0
   rec_loss_type: l1
   sim_loss_weight: 1.0
   attn_loss_weight: 0
   attn_loss_type: 'kldiv'
-  v_rel_loss_weight: 1.0
+  v_rel_loss_weight: 0
   gpus: 2
-  batch_size: 4
+  batch_size: 8
   accumulate_grad_batches: 3
   use_fp16: True
   monitor_losses: True
@@ -72,9 +75,9 @@ optimizer:
   
 data:
   bucketing_path: './data/len_for_bucket'
-  libri_root: '../LibriSpeech'
-  # train_set: ['train-clean-100']
-  train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
+  libri_root: '../db/LibriSpeech'
+  #train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
+  train_set: ['train-clean-100']
   test_set: ['test-clean']
 
 specaug:

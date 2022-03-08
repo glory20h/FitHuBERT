@@ -2,10 +2,11 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
-
+from librosa.feature import melspectrogram
 from fairseq.dataclass import FairseqDataclass
 from fairseq.models import BaseFairseqModel
 from fairseq.modules import GradMultiply, LayerNorm
+import numpy as np
 
 from .module import (
     ConvFeatureExtractionModel,
@@ -46,11 +47,21 @@ class CustomStudentModelConfig(FairseqDataclass):
             "Choose from ['relu', 'gelu', 'gelu_fast', 'gelu_accurate', 'tanh', 'linear']"
         }
     )
+
     layer_type: str = field(
         default="transformer",
         metadata={
             "help": "layer type in encoder"
             "Choose from ['transformer', 'conformer']"
+        }
+    )
+
+    n_mels: int = field(
+        default=0,
+        metadata={
+            "help": "number of filters of melspectrogram"
+            "If it set to nonzero, feature extractor will be replaced to melspectrogram"
+            "80 is recommended"
         }
     )
 
@@ -174,6 +185,11 @@ class CustomStudentModelConfig(FairseqDataclass):
         metadata={"help": "Layer index to predict by prediction heads"}
     )
 
+    layerwise_proj: bool = field(
+        default=False,
+        metadata={"help": "Whether to use layer-wise projection for distillation"}
+    )
+
     # Time-reduction Layer
     enable_tr_layer: bool = field(
         default=True,
@@ -216,15 +232,22 @@ class CustomStudentModel(BaseFairseqModel):
         super().__init__()
         self.cfg = cfg
 
-        feature_enc_layers = eval(cfg.conv_feature_layers)
-        self.embed = feature_enc_layers[-1][0] # embedding dimension
 
-        self.feature_extractor = ConvFeatureExtractionModel(
-            conv_layers=feature_enc_layers,
-            dropout=0.0,
-            mode=cfg.extractor_mode,
-            conv_bias=cfg.conv_bias,
-        )
+        self.n_mels = cfg.n_mels
+
+        if self.n_mels <= 0:
+            feature_enc_layers = eval(cfg.conv_feature_layers)
+            self.embed = feature_enc_layers[-1][0] # embedding dimension
+
+            self.feature_extractor = ConvFeatureExtractionModel(
+                conv_layers=feature_enc_layers,
+                dropout=0.0,
+                mode=cfg.extractor_mode,
+                conv_bias=cfg.conv_bias,
+            )
+        else:
+            self.embed = cfg.n_mels
+            self.feature_extractor = None
 
         self.post_extract_proj = (
             nn.Linear(self.embed, cfg.encoder_embed_dim)
@@ -261,20 +284,27 @@ class CustomStudentModel(BaseFairseqModel):
         self.n_tasks = len(self.pred_layer_id)
 
         self.enable_tr_layer = cfg.enable_tr_layer
+        self.upsampler = None
         if cfg.enable_tr_layer:
-            (kernel, stride) = eval(cfg.tr_conv1d_kernel_stride)
             self.upsampler = torch.nn.ConvTranspose1d(
                 in_channels=cfg.encoder_embed_dim,
                 out_channels=cfg.encoder_embed_dim,
-                kernel_size=kernel,
-                stride=stride,
+                kernel_size=cfg.tr_reduce_factor,
+                stride=cfg.tr_reduce_factor,
             )
 
-        self.proj_head = nn.Sequential(
-            nn.Linear(cfg.encoder_embed_dim, pred_head_inter_dim * self.n_tasks),
-            nn.GELU(),
-            SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
-        ) if self.n_tasks > 0 else None
+        self.layerwise_proj = cfg.layerwise_proj
+        if cfg.layerwise_proj:
+            # (Naive) Layer-wise projection
+            # TODO: Try split version vs single version
+            self.proj_head = SplitLinear(cfg.encoder_embed_dim, self.n_tasks, pred_head_final_dim)
+        else:
+            # DistilHuBERT style projection
+            self.proj_head = nn.Sequential(
+                nn.Linear(cfg.encoder_embed_dim, pred_head_inter_dim * self.n_tasks),
+                nn.GELU(),
+                SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
+            ) if self.n_tasks > 0 else None
         
         self.specaug = None
 
@@ -300,7 +330,39 @@ class CustomStudentModel(BaseFairseqModel):
 
     def _disable_projection_heads(self):
         self.proj_head = None
-        self.upsampler = None
+
+    def _upsample(self, x):
+        if self.upsampler:
+            x = x.transpose(1,2)
+            x = self.upsampler(x)
+            x = x.transpose(1,2)
+
+        return x
+
+    def mel_spec_forward(self, source, sampling_rate = 16000,
+                         n_fft = 400, hop_length = 320):
+        # source: B X T
+        # return: B X n_mels(C) X T'
+        batch_mel_spc = []
+        device = source.device
+        source = source.cpu().numpy()
+
+        for batch in range(source.shape[0]):
+            single_mel_spc = melspectrogram(source[batch, ...],
+                                        sr = sampling_rate,
+                                        n_fft = n_fft,
+                                        n_mels = self.n_mels,
+                                        hop_length = hop_length,
+                                        center = False)
+            single_mel_spc = np.expand_dims(single_mel_spc, axis = 0)
+
+            batch_mel_spc.append(single_mel_spc)
+
+        batch_mel_spc = np.concatenate(batch_mel_spc, axis = 0) # B X n_mels X T'
+        batch_mel_spc = torch.from_numpy(batch_mel_spc).to(device)
+
+        return batch_mel_spc
+
 
     def forward(
         self,
@@ -308,18 +370,26 @@ class CustomStudentModel(BaseFairseqModel):
         padding_mask=None,
         layer=None,
     ):
-        if self.feature_grad_mult > 0:
-            features = self.feature_extractor(source)
-            if self.feature_grad_mult != 1.0:
-                features = GradMultiply.apply(features, self.feature_grad_mult)
-        else:
-            with torch.no_grad():
+
+        if self.n_mels <= 0:
+            if self.feature_grad_mult > 0:
                 features = self.feature_extractor(source)
+                if self.feature_grad_mult != 1.0:
+                    features = GradMultiply.apply(features, self.feature_grad_mult)
+            else:
+                with torch.no_grad():
+                    features = self.feature_extractor(source)
+        else:
+            features = self.mel_spec_forward(source)
+
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
 
         if padding_mask is not None and padding_mask.any():
+            
+            # feature: B X T' X D
+            # padding_mask: B X T
             input_lengths = (1 - padding_mask.long()).sum(-1)
             # apply conv formula to get real output_lengths
             output_lengths = self._get_feat_extract_output_lengths(input_lengths)
@@ -327,6 +397,7 @@ class CustomStudentModel(BaseFairseqModel):
             padding_mask = torch.zeros(
                 features.shape[:2], dtype=features.dtype, device=features.device
             )
+            # padding_mask: B X T'
 
             # these two operations makes sure that all values
             # before the output lengths indices are attended to
@@ -362,17 +433,22 @@ class CustomStudentModel(BaseFairseqModel):
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
+        if self.enable_tr_layer:
+            x = self._upsample(x)
+
         # Get output from projection heads
         if self.proj_head:
             out = x
-            if self.enable_tr_layer:
-                out = x.transpose(1,2)
-                out = self.upsampler(out)
-                out = out.transpose(1,2)
+            if self.layerwise_proj:
+                out = torch.cat([
+                    # TODO: verify if using single upsampler for all layer represenatations is better
+                    self._upsample(layer_results[i][0].transpose(0, 1))
+                    for i in self.pred_layer_id
+                ], dim=-1)
             b_sz, t_sz, _ = out.shape
-            pred = self.proj_head(out).reshape(b_sz, 1, t_sz, -1)
+            pred = self.proj_head(out)
             projections = (
-                pred.squeeze(1)
+                pred
                 .reshape(b_sz, t_sz, self.n_tasks, -1)
                 .permute(0, 2, 1, 3)
             ) # B x N x T x D
