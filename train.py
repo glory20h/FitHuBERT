@@ -287,8 +287,8 @@ class W2V2Distil(LightningModule):
         feat_loss = torch.add(rec_layer_loss, sim_layer_loss)
 
         if self.train_cfg['distil_random_layer']:
-            losses[f'layer[{self.rand_l}]'] = feat_loss[0]
-            losses[f'layer[{self.num_encoders-1}]'] = feat_loss[1]
+            losses[f'l[{self.rand_l}]'] = feat_loss[0]
+            losses[f'l[{self.num_encoders-1}]'] = feat_loss[1]
         else:
             for i, pred_id in enumerate(self.student_model.pred_layer_id):
                 losses[f'layer{pred_id}'] = feat_loss[i]
