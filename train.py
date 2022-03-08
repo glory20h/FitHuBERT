@@ -36,8 +36,8 @@ class W2V2Distil(LightningModule):
         freeze_model(self.teacher_model)
 
         # Make student config independent of teacher
-        model_cfg = self.yaml_cfg['distiller']
-        student_config = CustomStudentModelConfig(**model_cfg)
+        self.model_cfg = self.yaml_cfg['distiller']
+        student_config = CustomStudentModelConfig(**self.model_cfg)
         student_config.teacher_task_agnostic = self.task_agnostic
 
         # TODO: how to make it save only once?
@@ -83,7 +83,7 @@ class W2V2Distil(LightningModule):
             self.student_model.add_specaug(specaug)
 
         if self.train_cfg['distil_random_layer']:
-            self.num_encoders = model_cfg['encoder_layers']
+            self.num_encoders = self.model_cfg['encoder_layers']
             self.rand_l = random.randint(0, self.num_encoders-1)
 
         self.batch_size = self.train_cfg['batch_size']
