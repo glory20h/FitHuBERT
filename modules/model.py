@@ -14,7 +14,6 @@ from .module import (
     ConformerEncoder,
     TransformerSentenceEncoderLayer,
     SplitLinear,
-    LayerWiseProjHead,
 )
 
 @dataclass
@@ -188,17 +187,17 @@ class CustomStudentModelConfig(FairseqDataclass):
 
     layerwise_proj: bool = field(
         default=False,
-        metadata={"help": "Whether to use (naive) layer-wise projection for distillation"}
+        metadata={"help": "Whether to use layer-wise projection for distillation"}
     )
 
     # Time-reduction Layer
     enable_tr_layer: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "applying time reduction layer or not"}
     )
     
     type_of_tr_layer: str = field(
-        default="fc1",
+        default="fc2",
         metadata={"help": "type of time reduction layer"}
     )
     
@@ -298,14 +297,7 @@ class CustomStudentModel(BaseFairseqModel):
         if cfg.layerwise_proj:
             # (Naive) Layer-wise projection
             # TODO: Try split version vs single version
-            self.proj_head = nn.ModuleList([
-                LayerWiseProjHead(
-                    in_dim=cfg.encoder_embed_dim,
-                    out_dim=cfg.pred_head_final_dim,
-                    enable_tr_layer=cfg.enable_tr_layer,
-                    tr_reduce_factor=cfg.tr_reduce_factor,
-                ) for _ in range(cfg.encoder_layers)
-            ])
+            self.proj_head = SplitLinear(cfg.encoder_embed_dim, self.n_tasks, pred_head_final_dim)
         else:
             # DistilHuBERT style projection
             self.proj_head = nn.Sequential(
@@ -314,7 +306,6 @@ class CustomStudentModel(BaseFairseqModel):
                 SplitLinear(pred_head_inter_dim, self.n_tasks, pred_head_final_dim),
             ) if self.n_tasks > 0 else None
         
-        self.final_proj = None
         self.specaug = None
 
     def add_specaug(self, specaug):
@@ -338,11 +329,7 @@ class CustomStudentModel(BaseFairseqModel):
         return input_lengths.to(torch.long)
 
     def _disable_projection_heads(self):
-        if self.layerwise_proj:
-            self.final_proj = self.proj_head[-1]
-            self.proj_head = None
-        else:
-            self.proj_head = None
+        self.proj_head = None
 
     def _upsample(self, x):
         if self.upsampler:
@@ -361,7 +348,7 @@ class CustomStudentModel(BaseFairseqModel):
         source = source.cpu().numpy()
 
         for batch in range(source.shape[0]):
-            single_mel_spc = melspectrogram(y = source[batch, ...],
+            single_mel_spc = melspectrogram(source[batch, ...],
                                         sr = sampling_rate,
                                         n_fft = n_fft,
                                         n_mels = self.n_mels,
@@ -375,6 +362,7 @@ class CustomStudentModel(BaseFairseqModel):
         batch_mel_spc = torch.from_numpy(batch_mel_spc).to(device)
 
         return batch_mel_spc
+
 
     def forward(
         self,
@@ -445,57 +433,27 @@ class CustomStudentModel(BaseFairseqModel):
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
-        if self.layerwise_proj:
-            if self.proj_head:
-                projections = [
-                    head(layer_results[i][0].transpose(0, 1))
-                    for i, head in enumerate(self.proj_head)
-                ]
-                x = projections[-1]
-            else:
-                x = self.final_proj(x)
-                projections = None
-                
+        if self.enable_tr_layer:
+            x = self._upsample(x)
+
+        # Get output from projection heads
+        if self.proj_head:
+            out = x
+            if self.layerwise_proj:
+                out = torch.cat([
+                    # TODO: verify if using single upsampler for all layer represenatations is better
+                    self._upsample(layer_results[i][0].transpose(0, 1))
+                    for i in self.pred_layer_id
+                ], dim=-1)
+            b_sz, t_sz, _ = out.shape
+            pred = self.proj_head(out)
+            projections = (
+                pred
+                .reshape(b_sz, t_sz, self.n_tasks, -1)
+                .permute(0, 2, 1, 3)
+            ) # B x N x T x D
         else:
-            if self.enable_tr_layer: # -> if not layerwise_proj
-                x = self._upsample(x)
-
-            if self.proj_head:
-                # DistilHuBERT style projection
-                b_sz, t_sz, _ = x.shape
-                pred = self.proj_head(x)
-                projections = (
-                    pred
-                    .reshape(b_sz, t_sz, self.n_tasks, -1)
-                    .permute(0, 2, 1, 3)
-                ) # B x N x T x D
-            else:
-                projections = None
-
-        # if self.enable_tr_layer: # -> if not layerwise_proj
-        #     x = self._upsample(x)
-
-        # # Get output from projection heads
-        # if self.proj_head:
-        #     if self.layerwise_proj:
-        #         # (naive) layer-wise projection
-        #         out = torch.cat([
-        #             # TODO: verify if using single upsampler for all layer represenatations is better
-        #             self._upsample(layer_results[i][0].transpose(0, 1))
-        #             for i in self.pred_layer_id
-        #         ], dim=-1)
-
-        #     else:
-        #         # DistilHuBERT style projection
-        #         b_sz, t_sz, _ = x.shape
-        #         pred = self.proj_head(x)
-        #         projections = (
-        #             pred
-        #             .reshape(b_sz, t_sz, self.n_tasks, -1)
-        #             .permute(0, 2, 1, 3)
-        #         ) # B x N x T x D
-        # else:
-        #     projections = None
+            projections = None
 
         return {
             "x": x,
