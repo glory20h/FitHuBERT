@@ -22,41 +22,42 @@ reload(logging)
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.plugins import DDPPlugin
 
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'distilhubert-paper-test'
-CHECKPOINT = 'last.ckpt'
-# CHECKPOINT = None
+OUTPUT_DIR = 'incs_ch-nocopytrf-0.1'
+#CHECKPOINT = 'last.ckpt'
+CHECKPOINT = None
 
 # MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
-MODEL_CHECKPOINT = None
+MODEL_CHECKPOINT = './results/pretrain/incs_ch-nocopytrf-0.1/last.ckpt'
 # MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
-MODEL_CONFIG = None
+MODEL_CONFIG = './results/pretrain/incs_ch-nocopytrf-0.1/2022-03-07_05h44m17s.yaml'
 
 DOWNSTREAM = 'asr'
 
-# UPSTREAM = 'test'
-UPSTREAM = 'distilhubert'
+UPSTREAM = 'test'
+#UPSTREAM = 'distilhubert'
 UPSTREAM_TRAINABLE = False
 # UPSTREAM_TRAINABLE = True
-# UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
-UPSTREAM_FEATURE_SELECTION = 'paper'
+UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
+# UPSTREAM_FEATURE_SELECTION = 'paper'
 UPSTREAM_LAYER_SELECTION = None
 
 # Training related
-GPUS = 4
-ACCUMULATE_GRAD_BATCHES = 4
+GPUS = 2
+ACCUMULATE_GRAD_BATCHES = 1
 
 SEED = 1339
 
-LIBRI_ROOT = '../LibriSpeech'
+LIBRI_ROOT = '../db/LibriSpeech'
 S3PRL_ROOT = '../s3prl/s3prl'
 
 # Evaluation related
-# TEST = False
-TEST = True
+TEST = False
+# TEST = True
 TEST_SPLIT = 'test-clean' # default: 'test'
 # --------------------------------------
 
@@ -345,17 +346,17 @@ if __name__ == '__main__':
 
     trainer = Trainer(
         gpus=GPUS,
-        strategy="ddp",
-        # amp_backend="apex",
-        # amp_level="O2",
-        precision=16,
+        strategy=DDPPlugin(find_unused_parameters=False),
+        amp_backend="apex",
+        amp_level="O2",
+        #precision=16,
         max_steps=config['runner']['total_steps'], # -> TODO: must verify this
         sync_batchnorm=True,
         # deterministic=True,   # -> For some reason produces error!
         accumulate_grad_batches=ACCUMULATE_GRAD_BATCHES,
         gradient_clip_val=config['runner']['gradient_clipping'],
-        callbacks=[checkpoint_callback],
-    )
+        callbacks=[checkpoint_callback]
+        )
 
     if TEST:
         trainer.test(model)
