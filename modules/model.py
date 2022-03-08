@@ -188,11 +188,7 @@ class CustomStudentModelConfig(FairseqDataclass):
 
     layerwise_proj: bool = field(
         default=False,
-<<<<<<< HEAD
-        metadata={"help": "Whether to use layer-wise projection for distillation"}
-=======
         metadata={"help": "Whether to use (naive) layer-wise projection for distillation"}
->>>>>>> cf91edd141856a55f90be716078de556a96edc9c
     )
 
     # Time-reduction Layer
@@ -302,9 +298,6 @@ class CustomStudentModel(BaseFairseqModel):
         if cfg.layerwise_proj:
             # (Naive) Layer-wise projection
             # TODO: Try split version vs single version
-<<<<<<< HEAD
-            self.proj_head = SplitLinear(cfg.encoder_embed_dim, self.n_tasks, pred_head_final_dim)
-=======
             self.proj_head = nn.ModuleList([
                 LayerWiseProjHead(
                     in_dim=cfg.encoder_embed_dim,
@@ -313,7 +306,6 @@ class CustomStudentModel(BaseFairseqModel):
                     tr_reduce_factor=cfg.tr_reduce_factor,
                 ) for _ in range(cfg.encoder_layers)
             ])
->>>>>>> cf91edd141856a55f90be716078de556a96edc9c
         else:
             # DistilHuBERT style projection
             self.proj_head = nn.Sequential(
@@ -346,15 +338,11 @@ class CustomStudentModel(BaseFairseqModel):
         return input_lengths.to(torch.long)
 
     def _disable_projection_heads(self):
-<<<<<<< HEAD
-        self.proj_head = None
-=======
         if self.layerwise_proj:
             self.final_proj = self.proj_head[-1]
             self.proj_head = None
         else:
             self.proj_head = None
->>>>>>> cf91edd141856a55f90be716078de556a96edc9c
 
     def _upsample(self, x):
         if self.upsampler:
@@ -363,7 +351,6 @@ class CustomStudentModel(BaseFairseqModel):
             x = x.transpose(1,2)
 
         return x
-<<<<<<< HEAD
 
     def mel_spec_forward(self, source, sampling_rate = 16000,
                          n_fft = 400, hop_length = 320):
@@ -388,9 +375,6 @@ class CustomStudentModel(BaseFairseqModel):
         batch_mel_spc = torch.from_numpy(batch_mel_spc).to(device)
 
         return batch_mel_spc
-
-=======
->>>>>>> cf91edd141856a55f90be716078de556a96edc9c
 
     def forward(
         self,
@@ -461,27 +445,6 @@ class CustomStudentModel(BaseFairseqModel):
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
-<<<<<<< HEAD
-        if self.enable_tr_layer:
-            x = self._upsample(x)
-
-        # Get output from projection heads
-        if self.proj_head:
-            out = x
-            if self.layerwise_proj:
-                out = torch.cat([
-                    # TODO: verify if using single upsampler for all layer represenatations is better
-                    self._upsample(layer_results[i][0].transpose(0, 1))
-                    for i in self.pred_layer_id
-                ], dim=-1)
-            b_sz, t_sz, _ = out.shape
-            pred = self.proj_head(out)
-            projections = (
-                pred
-                .reshape(b_sz, t_sz, self.n_tasks, -1)
-                .permute(0, 2, 1, 3)
-            ) # B x N x T x D
-=======
         if self.layerwise_proj:
             if self.proj_head:
                 projections = [
@@ -492,7 +455,7 @@ class CustomStudentModel(BaseFairseqModel):
             else:
                 x = self.final_proj(x)
                 projections = None
->>>>>>> cf91edd141856a55f90be716078de556a96edc9c
+                
         else:
             if self.enable_tr_layer: # -> if not layerwise_proj
                 x = self._upsample(x)
