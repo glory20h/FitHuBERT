@@ -361,7 +361,7 @@ class CustomStudentModel(BaseFairseqModel):
         source = source.cpu().numpy()
 
         for batch in range(source.shape[0]):
-            single_mel_spc = melspectrogram(source[batch, ...],
+            single_mel_spc = melspectrogram(y = source[batch, ...],
                                         sr = sampling_rate,
                                         n_fft = n_fft,
                                         n_mels = self.n_mels,
