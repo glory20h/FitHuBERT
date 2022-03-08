@@ -1,6 +1,7 @@
 import os
 import re
 import yaml
+import random
 import argparse
 import logging
 import numpy as np
@@ -35,8 +36,8 @@ class W2V2Distil(LightningModule):
         freeze_model(self.teacher_model)
 
         # Make student config independent of teacher
-        model_cfg = self.yaml_cfg['distiller']
-        student_config = CustomStudentModelConfig(**model_cfg)
+        self.model_cfg = self.yaml_cfg['distiller']
+        student_config = CustomStudentModelConfig(**self.model_cfg)
         student_config.teacher_task_agnostic = self.task_agnostic
 
         # TODO: how to make it save only once?
@@ -80,6 +81,10 @@ class W2V2Distil(LightningModule):
             from utils.specaug import SpecAug
             specaug = SpecAug(**self.yaml_cfg['specaug'])
             self.student_model.add_specaug(specaug)
+
+        if self.train_cfg['distil_random_layer']:
+            self.num_encoders = self.model_cfg['encoder_layers']
+            self.rand_l = random.randint(0, self.num_encoders-1)
 
         self.batch_size = self.train_cfg['batch_size']
         self.num_gpus = self.train_cfg['gpus']
@@ -158,6 +163,10 @@ class W2V2Distil(LightningModule):
 
         return loss
 
+    def training_epoch_end(self, training_step_outputs):
+        if self.train_cfg['distil_random_layer']:
+            self.rand_l = random.randint(0, self.num_encoders-1)
+
     def validation_step(self, batch, batch_idx):
         student_results, teacher_results = self(**batch)
 
@@ -226,20 +235,31 @@ class W2V2Distil(LightningModule):
 
         # Feature loss
         if self.rec_loss_weight > 0:
-            teacher_hiddens = [
-                teacher_results["layer_results"][i][0].transpose(0, 1)
-                for i in self.student_model.pred_layer_id
-            ]
-            
-            teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
-            
-            if self.train_cfg['no_projections']:
+            if self.train_cfg['distil_random_layer']:
+                # TODO: generalize to 2 -> 3/4/5 ... layers
+                teacher_hiddens = torch.stack([
+                    teacher_results["layer_results"][self.rand_l][0].transpose(0, 1),
+                    teacher_results["layer_results"][-1][0].transpose(0, 1),
+                ], dim=1)
+                
                 pred = torch.stack([
-                    student_results["layer_results"][-1][0].transpose(0, 1)
-                    for i in self.student_model.pred_layer_id
+                    student_results["projections"][self.rand_l],
+                    student_results["projections"][-1],
                 ], dim=1)
             else:
-                pred = student_results['projections']
+                teacher_hiddens = [
+                    teacher_results["layer_results"][i][0].transpose(0, 1)
+                    for i in self.student_model.pred_layer_id
+                ]
+                teacher_hiddens = torch.stack(teacher_hiddens, dim=1)  # B x N x T x D
+                
+                if self.model_cfg['layerwise_proj']:
+                    pred = torch.stack([
+                        student_results["projections"][i]
+                        for i in self.student_model.pred_layer_id
+                    ], dim=1)
+                else:
+                    pred = student_results['projections']
             target = teacher_hiddens.narrow(2, 0, pred.shape[2])
         
             if self.rec_loss_type == 'l1':
@@ -265,9 +285,13 @@ class W2V2Distil(LightningModule):
             sim_layer_loss = 0
 
         feat_loss = torch.add(rec_layer_loss, sim_layer_loss)
-        
-        for i, pred_id in enumerate(self.student_model.pred_layer_id):
-            losses[f'layer{pred_id}'] = feat_loss[i]
+
+        if self.train_cfg['distil_random_layer']:
+            losses[f'l[{self.rand_l}]'] = feat_loss[0]
+            losses[f'l[{self.num_encoders-1}]'] = feat_loss[1]
+        else:
+            for i, pred_id in enumerate(self.student_model.pred_layer_id):
+                losses[f'layer{pred_id}'] = feat_loss[i]
 
         # Attention distribution transfer loss
         if self.attn_loss_weight > 0:
@@ -353,7 +377,7 @@ class W2V2Distil(LightningModule):
     def configure_optimizers(self):
         # optimizer = torch.optim.AdamW(self.parameters(), lr=eval(self.yaml_cfg['optimizer']['lr']))
         # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=8, factor=0.1, verbose=True)
-
+        
         train_batches = len(self.train_dataloader()) // self.num_gpus
         num_training_steps = (self.train_cfg['num_epochs'] * train_batches) // self.train_cfg['accumulate_grad_batches']
         num_warmup_steps = int(num_training_steps * self.yaml_cfg['optimizer']['warmup_proportion'])
@@ -413,6 +437,7 @@ if __name__ == '__main__':
     gpus = YAML_CFG['train']['gpus']
     num_epochs = YAML_CFG['train']['num_epochs']
     use_fp16 = 16 if YAML_CFG['train']['use_fp16'] else 32
+    use_apex = 'apex' if YAML_CFG['train']['use_apex'] else 'native'
     accumulate_grad_batches = YAML_CFG['train']['accumulate_grad_batches']
 
     model = W2V2Distil(cfg = YAML_CFG)
@@ -440,7 +465,7 @@ if __name__ == '__main__':
     trainer = Trainer(
         gpus=gpus,
         strategy="ddp",
-        # amp_backend="apex",
+        amp_backend=use_apex,
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,
