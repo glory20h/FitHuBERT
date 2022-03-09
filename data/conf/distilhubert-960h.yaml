@@ -32,6 +32,9 @@ distiller:
   feature_grad_mult: 0.1
   conv_bias: False
 
+  # For replacing CNN with mel spectrograms
+  n_mels: 0
+
   # Convolutional relative positional encoding
   conv_pos: 128
   conv_pos_groups: 16
