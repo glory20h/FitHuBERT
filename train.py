@@ -477,12 +477,10 @@ if __name__ == '__main__':
 
     early_stopping = EarlyStopping(
         monitor='v_loss',
-        patience=15,
+        patience=25,
         verbose=True,
         mode='min'
     )
-
-    prog_bar = CustomProgBar()
 
     trainer = Trainer(
         gpus=gpus,
@@ -492,7 +490,7 @@ if __name__ == '__main__':
         max_epochs=num_epochs,
         sync_batchnorm=True,
         accumulate_grad_batches=accumulate_grad_batches,
-        callbacks=[early_stopping, checkpoint_callback],
+        callbacks=[checkpoint_callback],
     )
 
     if args.test:
