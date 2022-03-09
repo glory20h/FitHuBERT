@@ -86,11 +86,12 @@ specaug:
   adaptive_number_ratio: 0.04
   adaptive_size_ratio: 0.04
   max_n_time_masks: 20
-  apply_time_warp: true
+  apply_time_warp: false
   apply_time_mask: true
   apply_freq_mask: true
+  replace_with_zero: false
   time_warp_window: 5
-  time_mask_width_range: [0, 40]
-  freq_mask_width_range: [0, 50]
+  time_mask_width_range: [0, 100]
+  freq_mask_width_range: [0, 27]
   num_freq_mask: 4
   num_time_mask: 2

@@ -28,11 +28,11 @@ class SpecAug(torch.nn.Module):
     """SpecAug"""
     def __init__(
         self,
-        apply_time_warp=False,
+        apply_time_warp=True,
         time_warp_window=5,
         time_warp_mode="bicubic",
         apply_freq_mask=True,
-        freq_mask_width_range=(0, 27),
+        freq_mask_width_range=(0, 20),
         num_freq_mask=2,
         apply_time_mask=True,
         time_mask_width_range=(0, 100),
@@ -40,7 +40,8 @@ class SpecAug(torch.nn.Module):
         adaptive_number_ratio = 0.04,
         adaptive_size_ratio = 0.04,
         max_n_time_masks = 20,
-        adaptive=False
+        adaptive=False,
+        replace_with_zero=True
     ):
         assert any([apply_time_warp, apply_freq_mask, apply_time_mask])
 
@@ -59,6 +60,7 @@ class SpecAug(torch.nn.Module):
                 dim="freq",
                 mask_width_range=freq_mask_width_range,
                 num_mask=num_freq_mask,
+                replace_with_zero=replace_with_zero
             )
         else:
             self.freq_mask = None
@@ -71,7 +73,8 @@ class SpecAug(torch.nn.Module):
                 adaptive=adaptive,
                 adaptive_number_ratio=adaptive_number_ratio,
                 adaptive_size_ratio=adaptive_size_ratio,
-                max_n_time_masks=max_n_time_masks
+                max_n_time_masks=max_n_time_masks,
+                replace_with_zero=replace_with_zero
             )
         else:
             self.time_mask = None
@@ -176,7 +179,7 @@ class MaskAlongAxis(torch.nn.Module):
         mask_width_range=(0, 30),
         num_mask=2,
         dim="time",
-        replace_with_zero=False,
+        replace_with_zero=True,
         adaptive_number_ratio = 0.04,
         adaptive_size_ratio = 0.04,
         max_n_time_masks = 20,
