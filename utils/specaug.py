@@ -28,14 +28,14 @@ class SpecAug(torch.nn.Module):
     """SpecAug"""
     def __init__(
         self,
-        apply_time_warp=True,
+        apply_time_warp=False,
         time_warp_window=5,
         time_warp_mode="bicubic",
         apply_freq_mask=True,
-        freq_mask_width_range=(0,20),
+        freq_mask_width_range=(0, 27),
         num_freq_mask=2,
         apply_time_mask=True,
-        time_mask_width_range=(0,100),
+        time_mask_width_range=(0, 100),
         num_time_mask=2,
         adaptive_number_ratio = 0.04,
         adaptive_size_ratio = 0.04,
@@ -176,7 +176,7 @@ class MaskAlongAxis(torch.nn.Module):
         mask_width_range=(0, 30),
         num_mask=2,
         dim="time",
-        replace_with_zero=True,
+        replace_with_zero=False,
         adaptive_number_ratio = 0.04,
         adaptive_size_ratio = 0.04,
         max_n_time_masks = 20,
@@ -190,6 +190,7 @@ class MaskAlongAxis(torch.nn.Module):
                 f"{mask_width_range}",
             )
 
+        # B X T X D
         assert mask_width_range[1] > mask_width_range[0]
         if isinstance(dim, str):
             if dim == "time":
