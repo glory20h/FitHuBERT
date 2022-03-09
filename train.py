@@ -82,9 +82,13 @@ class W2V2Distil(LightningModule):
             specaug = SpecAug(**self.yaml_cfg['specaug'])
             self.student_model.add_specaug(specaug)
 
-        if self.train_cfg['distil_random_layer']:
+        if self.train_cfg['distil_random_layer'] > 0:
             self.num_encoders = self.model_cfg['encoder_layers']
-            self.rand_l = random.randint(0, self.num_encoders-1)
+            self.all_enc = range(self.num_encoders-1)
+            self.rand_l = random.sample(self.all_enc, self.train_cfg['distil_random_layer'])
+
+            # if self.trainer.is_global_zero:
+            print(f"Random layers to distill: {self.rand_l}")
 
         self.batch_size = self.train_cfg['batch_size']
         self.num_gpus = self.train_cfg['gpus']
@@ -164,8 +168,13 @@ class W2V2Distil(LightningModule):
         return loss
 
     def training_epoch_end(self, training_step_outputs):
-        if self.train_cfg['distil_random_layer']:
-            self.rand_l = random.randint(0, self.num_encoders-1)
+        if self.train_cfg['distil_random_layer'] > 0:
+            self.rand_l = random.sample(self.all_enc, self.train_cfg['distil_random_layer'])
+
+            # TODO: reset prog bar metrics
+            # if self.trainer.is_global_zero:
+            print(f"Random layers to distill: {self.rand_l}")
+            # self.trainer._logger_connector.reset_metrics()
 
     def validation_step(self, batch, batch_idx):
         student_results, teacher_results = self(**batch)
@@ -181,6 +190,9 @@ class W2V2Distil(LightningModule):
 
             self.wer_metric.add_batch(predictions=predictions, references=batch['labels'])
             self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
+
+        if self.train_cfg['distil_random_layer'] > 0:
+            loss = losses[f'layer[{self.num_encoders-1}]']
 
         self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
 
@@ -235,17 +247,24 @@ class W2V2Distil(LightningModule):
 
         # Feature loss
         if self.rec_loss_weight > 0:
-            if self.train_cfg['distil_random_layer']:
-                # TODO: generalize to 2 -> 3/4/5 ... layers
-                teacher_hiddens = torch.stack([
-                    teacher_results["layer_results"][self.rand_l][0].transpose(0, 1),
-                    teacher_results["layer_results"][-1][0].transpose(0, 1),
-                ], dim=1)
+            if self.train_cfg['distil_random_layer'] > 0:
+                teacher_hiddens = [
+                teacher_results["layer_results"][l][0].transpose(0, 1)
+                    for l in self.rand_l
+                ]
+                teacher_hiddens.append(
+                    teacher_results["layer_results"][-1][0].transpose(0, 1)
+                )
+                teacher_hiddens = torch.stack(teacher_hiddens, dim=1)
                 
-                pred = torch.stack([
-                    student_results["projections"][self.rand_l],
-                    student_results["projections"][-1],
-                ], dim=1)
+                student_hiddens = [
+                    student_results["projections"][l]
+                    for l in self.rand_l
+                ]
+                student_hiddens.append(
+                    student_results["projections"][-1]
+                )
+                pred = torch.stack(student_hiddens, dim=1)
             else:
                 teacher_hiddens = [
                     teacher_results["layer_results"][i][0].transpose(0, 1)
@@ -286,9 +305,10 @@ class W2V2Distil(LightningModule):
 
         feat_loss = torch.add(rec_layer_loss, sim_layer_loss)
 
-        if self.train_cfg['distil_random_layer']:
-            losses[f'l[{self.rand_l}]'] = feat_loss[0]
-            losses[f'l[{self.num_encoders-1}]'] = feat_loss[1]
+        if self.train_cfg['distil_random_layer'] > 0:
+            for i, l in enumerate(self.rand_l):
+                losses[f'rand_l{i}'] = feat_loss[i]
+            losses[f'layer[{self.num_encoders-1}]'] = feat_loss[1]
         else:
             for i, pred_id in enumerate(self.student_model.pred_layer_id):
                 losses[f'layer{pred_id}'] = feat_loss[i]
@@ -461,6 +481,8 @@ if __name__ == '__main__':
         verbose=True,
         mode='min'
     )
+
+    prog_bar = CustomProgBar()
 
     trainer = Trainer(
         gpus=gpus,
