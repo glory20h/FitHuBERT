@@ -348,7 +348,7 @@ class CustomStudentModel(BaseFairseqModel):
         source = source.cpu().numpy()
 
         for batch in range(source.shape[0]):
-            single_mel_spc = melspectrogram(source[batch, ...],
+            single_mel_spc = melspectrogram(y = source[batch, ...],
                                         sr = sampling_rate,
                                         n_fft = n_fft,
                                         n_mels = self.n_mels,
@@ -385,6 +385,13 @@ class CustomStudentModel(BaseFairseqModel):
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
+
+        # Apply SpecAug on extracted features
+        if self.specaug:
+            feats, _ = self.specaug(features)
+            features = torch.stack(feats)
+        else:
+            features = self.dropout_input(features)
 
         if padding_mask is not None and padding_mask.any():
             
@@ -423,13 +430,6 @@ class CustomStudentModel(BaseFairseqModel):
         # For different transformer dimension between teacher & student,
         # Need to implement prediction head for dimension mistmatch
         features_to_distill = features
-
-        # Apply SpecAug on extracted features
-        if self.specaug:
-            feats, _ = self.specaug(features)
-            features = torch.stack(feats)
-        else:
-            features = self.dropout_input(features)
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
