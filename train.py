@@ -26,6 +26,7 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 class W2V2Distil(LightningModule):
     def __init__(self, cfg):
         super().__init__()
+        self.save_hyperparameters()
 
         self.yaml_cfg = cfg
         self.train_cfg = cfg['train']
@@ -57,6 +58,7 @@ class W2V2Distil(LightningModule):
         self.attn_loss_weight = self.train_cfg['attn_loss_weight']
         self.attn_loss_type = self.train_cfg['attn_loss_type']
         self.v_rel_loss_weight = self.train_cfg['v_rel_loss_weight']
+        self.random_layer_weight = self.train_cfg['random_layer_weight']
 
         if self.attn_loss_weight > 0:
             # TODO: move code below into train.py
@@ -172,8 +174,6 @@ class W2V2Distil(LightningModule):
             self.rand_l = random.sample(self.all_enc, self.train_cfg['distil_random_layer'])
 
             # TODO: reset prog bar metrics
-            # if self.trainer.is_global_zero:
-            print(f"Random layers to distill: {self.rand_l}")
             # self.trainer._logger_connector.reset_metrics()
 
     def validation_step(self, batch, batch_idx):
@@ -192,7 +192,7 @@ class W2V2Distil(LightningModule):
             self.cer_metric.add_batch(predictions=predictions, references=batch['labels'])
 
         if self.train_cfg['distil_random_layer'] > 0:
-            loss = losses[f'layer[{self.num_encoders-1}]']
+            loss = losses[f'l{self.num_encoders-1}']
 
         self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.batch_size)
 
@@ -287,18 +287,28 @@ class W2V2Distil(LightningModule):
                 rec_loss = F.mse_loss(pred, target, reduction="none")
             else:
                 raise NotImplementedError("rec_loss_type must be one of 'l1', 'mse'.")
-            with torch.no_grad():
-                rec_layer_loss = rec_loss.mean((0, 2, 3)) 
-            rec_loss = rec_loss.mean()
+            if self.train_cfg['distil_random_layer'] > 0:
+                rec_loss[:, :-1] = rec_loss[:, :-1] * self.random_layer_weight
+                rec_layer_loss = rec_loss.mean((0, 2, 3))
+                rec_loss = rec_layer_loss.sum()
+            else:
+                with torch.no_grad():
+                    rec_layer_loss = rec_loss.mean((0, 2, 3)) 
+                rec_loss = rec_loss.mean()
         else:
             rec_loss = 0
             rec_layer_loss = 0
         
         if self.sim_loss_weight > 0:
             sim_loss = -F.logsigmoid(F.cosine_similarity(pred, target, dim=-1))
-            with torch.no_grad():
-                sim_layer_loss = sim_loss.mean((0, 2))
-            sim_loss = sim_loss.mean()
+            if self.train_cfg['distil_random_layer'] > 0:
+                sim_loss[:, :-1] = sim_loss[:, :-1] * self.random_layer_weight
+                sim_layer_loss = sim_loss.mean((0, 2, 3))
+                sim_loss = sim_layer_loss.sum()
+            else:
+                with torch.no_grad():
+                    sim_layer_loss = sim_loss.mean((0, 2))
+                sim_loss = sim_loss.mean()
         else:
             sim_loss = 0
             sim_layer_loss = 0
@@ -307,8 +317,8 @@ class W2V2Distil(LightningModule):
 
         if self.train_cfg['distil_random_layer'] > 0:
             for i, l in enumerate(self.rand_l):
-                losses[f'rand_l{i}'] = feat_loss[i]
-            losses[f'layer[{self.num_encoders-1}]'] = feat_loss[1]
+                losses[f'l{l}'] = feat_loss[i]
+            losses[f'l{self.num_encoders-1}'] = feat_loss[-1]
         else:
             for i, pred_id in enumerate(self.student_model.pred_layer_id):
                 losses[f'layer{pred_id}'] = feat_loss[i]
@@ -463,7 +473,7 @@ if __name__ == '__main__':
     model = W2V2Distil(cfg = YAML_CFG)
 
     if checkpoint:
-        model = model.load_from_checkpoint(output_dir + checkpoint)
+        model = model.load_from_checkpoint(os.path.join(output_dir, checkpoint), cfg=YAML_CFG)
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir,
