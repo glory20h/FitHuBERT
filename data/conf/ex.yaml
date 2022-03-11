@@ -27,6 +27,7 @@ distiller:
   final_dim: 256
   fp16: True
   n_mels: 0
+  able_log_mel: true
   init_conv_layers: False
   init_encoder_layers: 2
   layer_norm_first: False
