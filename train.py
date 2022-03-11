@@ -85,9 +85,10 @@ class W2V2Distil(LightningModule):
             specaug = SpecAug(**self.yaml_cfg['specaug'])
             self.student_model.add_specaug(specaug)
 
-        if self.train_cfg['distil_random_layer']:
+        if self.train_cfg['distil_random_layer'] > 0:
             self.num_encoders = self.model_cfg['encoder_layers']
-            self.rand_l = random.randint(0, self.num_encoders-1)
+            self.all_enc = range(self.num_encoders-1)
+            self.rand_l = random.sample(self.all_enc, self.train_cfg['distil_random_layer'])
 
         self.batch_size = self.train_cfg['batch_size']
         self.num_gpus = self.train_cfg['gpus']
@@ -244,17 +245,24 @@ class W2V2Distil(LightningModule):
 
         # Feature loss
         if self.rec_loss_weight > 0:
-            if self.train_cfg['distil_random_layer']:
-                # TODO: generalize to 2 -> 3/4/5 ... layers
-                teacher_hiddens = torch.stack([
-                    teacher_results["layer_results"][self.rand_l][0].transpose(0, 1),
-                    teacher_results["layer_results"][-1][0].transpose(0, 1),
-                ], dim=1)
+            if self.train_cfg['distil_random_layer'] > 0:
+                teacher_hiddens = [
+                teacher_results["layer_results"][l][0].transpose(0, 1)
+                    for l in self.rand_l
+                ]
+                teacher_hiddens.append(
+                    teacher_results["layer_results"][-1][0].transpose(0, 1)
+                )
+                teacher_hiddens = torch.stack(teacher_hiddens, dim=1)
                 
-                pred = torch.stack([
-                    student_results["projections"][self.rand_l],
-                    student_results["projections"][-1],
-                ], dim=1)
+                student_hiddens = [
+                    student_results["projections"][l]
+                    for l in self.rand_l
+                ]
+                student_hiddens.append(
+                    student_results["projections"][-1]
+                )
+                pred = torch.stack(student_hiddens, dim=1)
             else:
                 teacher_hiddens = [
                     teacher_results["layer_results"][i][0].transpose(0, 1)
@@ -307,7 +315,7 @@ class W2V2Distil(LightningModule):
 
         if self.train_cfg['distil_random_layer'] > 0:
             for i, l in enumerate(self.rand_l):
-                losses[f'rand_l{i}'] = feat_loss[i]
+                losses[f'l{l}'] = feat_loss[i]
             losses[f'l{self.num_encoders-1}'] = feat_loss[-1]
         else:
             for i, pred_id in enumerate(self.student_model.pred_layer_id):
