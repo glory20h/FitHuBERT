@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
-from librosa.feature import melspectrogram
+from torchaudio.transforms import MelSpectrogram
 from fairseq.dataclass import FairseqDataclass
 from fairseq.models import BaseFairseqModel
 from fairseq.modules import GradMultiply, LayerNorm
@@ -63,6 +63,14 @@ class CustomStudentModelConfig(FairseqDataclass):
             "help": "number of filters of melspectrogram"
             "If it set to nonzero, feature extractor will be replaced to melspectrogram"
             "80 is recommended"
+        }
+    )
+
+    able_log_mel: bool = field(
+        default=False,
+        metadata={
+            "help": "Take to log to melspectrogram"
+            "This must be turned off if you don't use n_mels"
         }
     )
 
@@ -188,17 +196,17 @@ class CustomStudentModelConfig(FairseqDataclass):
 
     layerwise_proj: bool = field(
         default=False,
-        metadata={"help": "Whether to use layer-wise projection for distillation"}
+        metadata={"help": "Whether to use (naive) layer-wise projection for distillation"}
     )
 
     # Time-reduction Layer
     enable_tr_layer: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "applying time reduction layer or not"}
     )
     
     type_of_tr_layer: str = field(
-        default="fc2",
+        default="fc1",
         metadata={"help": "type of time reduction layer"}
     )
     
@@ -233,8 +241,12 @@ class CustomStudentModel(BaseFairseqModel):
         super().__init__()
         self.cfg = cfg
 
+
         self.n_mels = cfg.n_mels
+
         if self.n_mels <= 0:
+            # Must be turned off for using cnn feature extractor
+            assert cfg.able_log_mel == False
             feature_enc_layers = eval(cfg.conv_feature_layers)
             self.embed = feature_enc_layers[-1][0] # embedding dimension
 
@@ -245,6 +257,7 @@ class CustomStudentModel(BaseFairseqModel):
                 conv_bias=cfg.conv_bias,
             )
         else:
+            self.able_log_mel = cfg.able_log_mel
             self.embed = cfg.n_mels
             self.feature_extractor = None
 
@@ -295,6 +308,7 @@ class CustomStudentModel(BaseFairseqModel):
         self.layerwise_proj = cfg.layerwise_proj
         if cfg.layerwise_proj:
             # (Naive) Layer-wise projection
+            # TODO: Try split version vs single version
             self.proj_head = nn.ModuleList([
                 LayerWiseProjHead(
                     in_dim=cfg.encoder_embed_dim,
@@ -349,27 +363,22 @@ class CustomStudentModel(BaseFairseqModel):
 
         return x
 
-    def mel_spec_forward(self, source, sampling_rate = 16000,
-                         n_fft = 400, hop_length = 320):
+    def mel_spec_forward(self, source):
         # source: B X T
         # return: B X n_mels(C) X T'
-        batch_mel_spc = []
         device = source.device
-        source = source.cpu().numpy()
 
-        for batch in range(source.shape[0]):
-            single_mel_spc = melspectrogram(y = source[batch, ...],
-                                        sr = sampling_rate,
-                                        n_fft = n_fft,
-                                        n_mels = self.n_mels,
-                                        hop_length = hop_length,
-                                        center = False)
-            single_mel_spc = np.expand_dims(single_mel_spc, axis = 0)
+        # Changed to torchaudio melspectrogram
+        mel_transform = MelSpectrogram(sample_rate = 16000,
+                                       n_fft = 400,
+                                       n_mels = self.n_mels,
+                                       hop_length = 320,
+                                       center = False).to(device)
 
-            batch_mel_spc.append(single_mel_spc)
+        batch_mel_spc = mel_transform(source + 1e-15)
 
-        batch_mel_spc = np.concatenate(batch_mel_spc, axis = 0) # B X n_mels X T'
-        batch_mel_spc = torch.from_numpy(batch_mel_spc).to(device)
+        if self.able_log_mel:
+            batch_mel_spc = torch.log(batch_mel_spc)
 
         return batch_mel_spc
 
@@ -379,6 +388,7 @@ class CustomStudentModel(BaseFairseqModel):
         padding_mask=None,
         layer=None,
     ):
+
         if self.n_mels <= 0:
             if self.feature_grad_mult > 0:
                 features = self.feature_extractor(source)
@@ -390,17 +400,12 @@ class CustomStudentModel(BaseFairseqModel):
         else:
             features = self.mel_spec_forward(source)
 
+
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
 
-        # Apply SpecAug on extracted features
-        if self.specaug:
-            feats, _ = self.specaug(features)
-            features = torch.stack(feats)
-        else:
-            features = self.dropout_input(features)
-
         if padding_mask is not None and padding_mask.any():
+            
             # feature: B X T' X D
             # padding_mask: B X T
             input_lengths = (1 - padding_mask.long()).sum(-1)
@@ -437,6 +442,14 @@ class CustomStudentModel(BaseFairseqModel):
         # Need to implement prediction head for dimension mistmatch
         features_to_distill = features
 
+        # Apply SpecAug on extracted features
+        # Input feature must be shape of B X T' X D
+        if self.specaug:
+            feats, _ = self.specaug(features)
+            features = torch.stack(feats)
+        else:
+            features = self.dropout_input(features)
+
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
         if self.layerwise_proj:
@@ -449,6 +462,7 @@ class CustomStudentModel(BaseFairseqModel):
             else:
                 x = self.final_proj(x)
                 projections = None
+
         else:
             if self.enable_tr_layer: # -> if not layerwise_proj
                 x = self._upsample(x)
@@ -464,6 +478,31 @@ class CustomStudentModel(BaseFairseqModel):
                 ) # B x N x T x D
             else:
                 projections = None
+
+        # if self.enable_tr_layer: # -> if not layerwise_proj
+        #     x = self._upsample(x)
+
+        # # Get output from projection heads
+        # if self.proj_head:
+        #     if self.layerwise_proj:
+        #         # (naive) layer-wise projection
+        #         out = torch.cat([
+        #             # TODO: verify if using single upsampler for all layer represenatations is better
+        #             self._upsample(layer_results[i][0].transpose(0, 1))
+        #             for i in self.pred_layer_id
+        #         ], dim=-1)
+
+        #     else:
+        #         # DistilHuBERT style projection
+        #         b_sz, t_sz, _ = x.shape
+        #         pred = self.proj_head(x)
+        #         projections = (
+        #             pred
+        #             .reshape(b_sz, t_sz, self.n_tasks, -1)
+        #             .permute(0, 2, 1, 3)
+        #         ) # B x N x T x D
+        # else:
+        #     projections = None
 
         return {
             "x": x,

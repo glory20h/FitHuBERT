@@ -10,6 +10,7 @@ import torchaudio
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from s3prl.optimizers import get_optimizer
+from pytorch_lightning.plugins import DDPPlugin
 
 from utils import *
 from modules.model import CustomStudentModelConfig, CustomStudentModel
@@ -84,13 +85,9 @@ class W2V2Distil(LightningModule):
             specaug = SpecAug(**self.yaml_cfg['specaug'])
             self.student_model.add_specaug(specaug)
 
-        if self.train_cfg['distil_random_layer'] > 0:
+        if self.train_cfg['distil_random_layer']:
             self.num_encoders = self.model_cfg['encoder_layers']
-            self.all_enc = range(self.num_encoders-1)
-            self.rand_l = random.sample(self.all_enc, self.train_cfg['distil_random_layer'])
-
-            # if self.trainer.is_global_zero:
-            print(f"Random layers to distill: {self.rand_l}")
+            self.rand_l = random.randint(0, self.num_encoders-1)
 
         self.batch_size = self.train_cfg['batch_size']
         self.num_gpus = self.train_cfg['gpus']
@@ -247,24 +244,17 @@ class W2V2Distil(LightningModule):
 
         # Feature loss
         if self.rec_loss_weight > 0:
-            if self.train_cfg['distil_random_layer'] > 0:
-                teacher_hiddens = [
-                teacher_results["layer_results"][l][0].transpose(0, 1)
-                    for l in self.rand_l
-                ]
-                teacher_hiddens.append(
-                    teacher_results["layer_results"][-1][0].transpose(0, 1)
-                )
-                teacher_hiddens = torch.stack(teacher_hiddens, dim=1)
+            if self.train_cfg['distil_random_layer']:
+                # TODO: generalize to 2 -> 3/4/5 ... layers
+                teacher_hiddens = torch.stack([
+                    teacher_results["layer_results"][self.rand_l][0].transpose(0, 1),
+                    teacher_results["layer_results"][-1][0].transpose(0, 1),
+                ], dim=1)
                 
-                student_hiddens = [
-                    student_results["projections"][l]
-                    for l in self.rand_l
-                ]
-                student_hiddens.append(
-                    student_results["projections"][-1]
-                )
-                pred = torch.stack(student_hiddens, dim=1)
+                pred = torch.stack([
+                    student_results["projections"][self.rand_l],
+                    student_results["projections"][-1],
+                ], dim=1)
             else:
                 teacher_hiddens = [
                     teacher_results["layer_results"][i][0].transpose(0, 1)
@@ -487,20 +477,20 @@ if __name__ == '__main__':
 
     early_stopping = EarlyStopping(
         monitor='v_loss',
-        patience=25,
+        patience=15,
         verbose=True,
         mode='min'
     )
 
     trainer = Trainer(
         gpus=gpus,
-        strategy="ddp",
+        strategy=DDPPlugin(find_unused_parameters=False),
         amp_backend=use_apex,
         precision=use_fp16,
         max_epochs=num_epochs,
         sync_batchnorm=True,
         accumulate_grad_batches=accumulate_grad_batches,
-        callbacks=[checkpoint_callback],
+        callbacks=[early_stopping, checkpoint_callback],
     )
 
     if args.test:
