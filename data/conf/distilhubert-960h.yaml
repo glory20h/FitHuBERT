@@ -35,6 +35,7 @@ distiller:
 
   # For replacing CNN with mel spectrograms
   n_mels: 0
+  able_log_mel: False
 
   # Convolutional relative positional encoding
   conv_pos: 128
@@ -114,5 +115,5 @@ specaug:
   time_warp_window: 5
   time_mask_width_range: [0, 100]
   freq_mask_width_range: [0, 27]
-  num_freq_mask: 4
+  num_freq_mask: 2
   num_time_mask: 2
