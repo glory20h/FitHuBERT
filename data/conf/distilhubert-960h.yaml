@@ -20,7 +20,8 @@ train:
   attn_loss_weight: 0
   attn_loss_type: kldiv
   v_rel_loss_weight: 0
-  distil_random_layer: False # True -> DistilHuBERT style distillation
+  distil_random_layer: 0  # 0 -> DistilHuBERT style distillation
+  random_layer_weight: 0.1
   no_projections: False
   specaug: False
   use_gt_for_ctc: True

@@ -63,7 +63,8 @@ train:
   monitor_losses: True
   use_gt_for_ctc: True
   no_projections: False
-  distil_random_layer: False
+  distil_random_layer: 0
+  random_layer_weight: 0.1
   specaug: False
 
 optimizer:
