@@ -315,7 +315,7 @@ class W2V2Distil(LightningModule):
 
         if self.train_cfg['distil_random_layer'] > 0:
             for i, l in enumerate(self.rand_l):
-                losses[f'l{l}'] = feat_loss[i]
+                losses[f'rand_l{i}'] = feat_loss[i]
             losses[f'l{self.num_encoders-1}'] = feat_loss[-1]
         else:
             for i, pred_id in enumerate(self.student_model.pred_layer_id):
