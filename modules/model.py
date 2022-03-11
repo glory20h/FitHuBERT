@@ -268,6 +268,14 @@ class CustomStudentModel(BaseFairseqModel):
             mel_spec_head_conv_layers = eval(cfg.mel_spec_head_conv_layers)
             self.embed = mel_spec_head_conv_layers[-1][0]
             self.feature_extractor = None
+            # Changed to torchaudio melspectrogram
+            self.mel_transform = MelSpectrogram(
+                sample_rate = 16000,
+                n_fft = 400,
+                n_mels = self.n_mels,
+                hop_length = 320,
+                center = False
+            )
             self.mel_spec_head = MelSpecHead(
                 n_mels=cfg.n_mels,
                 conv_layers=mel_spec_head_conv_layers
@@ -377,21 +385,13 @@ class CustomStudentModel(BaseFairseqModel):
 
     def mel_spec_forward(self, source):
         # source: B X T
-        # return: B X n_mels(C) X T'
-        device = source.device
 
-        # Changed to torchaudio melspectrogram
-        mel_transform = MelSpectrogram(sample_rate = 16000,
-                                       n_fft = 400,
-                                       n_mels = self.n_mels,
-                                       hop_length = 320,
-                                       center = False).to(device)
-
-        batch_mel_spc = mel_transform(source + 1e-15)
+        batch_mel_spc = self.mel_transform(source + 1e-15)
 
         if self.able_log_mel:
             batch_mel_spc = torch.log(batch_mel_spc)
 
+        # return: B X n_mels(C) X T'
         return batch_mel_spc
 
     def forward(
@@ -411,6 +411,11 @@ class CustomStudentModel(BaseFairseqModel):
                     features = self.feature_extractor(source)
         else:
             features = self.mel_spec_forward(source)
+            # Apply SpecAug on extracted features
+            # Input feature must be shape of B X T' X D
+            if self.specaug:
+                feats, _ = self.specaug(features)
+                features = torch.stack(feats)
             features = self.mel_spec_head(features)
 
         features = features.transpose(1, 2)
@@ -454,13 +459,7 @@ class CustomStudentModel(BaseFairseqModel):
         # Need to implement prediction head for dimension mistmatch
         features_to_distill = features
 
-        # Apply SpecAug on extracted features
-        # Input feature must be shape of B X T' X D
-        if self.specaug:
-            feats, _ = self.specaug(features)
-            features = torch.stack(feats)
-        else:
-            features = self.dropout_input(features)
+        features = self.dropout_input(features)
 
         x, layer_results, tr_layer_results = self.encoder(features, padding_mask=padding_mask, layer=layer)
 
