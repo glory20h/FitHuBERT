@@ -15,6 +15,7 @@ from .module import (
     TransformerSentenceEncoderLayer,
     SplitLinear,
     LayerWiseProjHead,
+    MelSpecHead,
 )
 
 @dataclass
@@ -72,6 +73,14 @@ class CustomStudentModelConfig(FairseqDataclass):
             "help": "Take to log to melspectrogram"
             "This must be turned off if you don't use n_mels"
         }
+    )
+
+    mel_spec_head_conv_layers: str = field(
+        default="[(128, 7, 1)] + [(256, 5, 1)] + [(512, 5, 1)] * 2",
+        metadata={
+            "help": "string describing convolutional layers for MelSpecHead in form of a python list that contains "
+            "[(dim, kernel_size, stride), ...], stride should always be fixed to 1."
+        },
     )
 
     # dropouts
@@ -241,9 +250,7 @@ class CustomStudentModel(BaseFairseqModel):
         super().__init__()
         self.cfg = cfg
 
-
         self.n_mels = cfg.n_mels
-
         if self.n_mels <= 0:
             # Must be turned off for using cnn feature extractor
             assert cfg.able_log_mel == False
@@ -258,8 +265,13 @@ class CustomStudentModel(BaseFairseqModel):
             )
         else:
             self.able_log_mel = cfg.able_log_mel
-            self.embed = cfg.n_mels
+            mel_spec_head_conv_layers = eval(cfg.mel_spec_head_conv_layers)
+            self.embed = mel_spec_head_conv_layers[-1][0]
             self.feature_extractor = None
+            self.mel_spec_head = MelSpecHead(
+                n_mels=cfg.n_mels,
+                conv_layers=mel_spec_head_conv_layers
+            )
 
         self.post_extract_proj = (
             nn.Linear(self.embed, cfg.encoder_embed_dim)
@@ -399,7 +411,7 @@ class CustomStudentModel(BaseFairseqModel):
                     features = self.feature_extractor(source)
         else:
             features = self.mel_spec_forward(source)
-
+            features = self.mel_spec_head(features)
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)

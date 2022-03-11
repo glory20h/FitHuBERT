@@ -659,3 +659,43 @@ class LayerWiseProjHead(nn.Module):
 
         # x: (B x T x D_out)
         return x
+
+
+class MelSpecHead(nn.Module):
+    """Projection Head for mel-filterbank features"""
+
+    def __init__(self, n_mels, conv_layers):
+        super().__init__()
+
+        in_dim = n_mels
+        self.conv_layers = nn.ModuleList()
+        for i, cl in enumerate(conv_layers):
+            assert len(cl) == 3, "invalid conv definition: " + str(cl)
+            (dim, k, stride) = cl
+
+            self.conv_layers.append(
+                torch.nn.Conv1d(
+                    in_channels=in_dim, 
+                    out_channels=dim, 
+                    kernel_size=k, 
+                    stride=1, 
+                    padding=(k // 2),
+                )
+            )
+            in_dim = dim
+
+        self.activation_fn = torch.nn.ReLU()
+
+    def forward(self, x:torch.Tensor):
+        # x: (B x D_in x T)
+
+        for i, conv in enumerate(self.conv_layers):
+            x = conv(x)
+
+            if i == len(self.conv_layers)-1:
+                break
+
+            x = self.activation_fn(x)
+
+        # x: (B x D_out x T)
+        return x

@@ -36,6 +36,7 @@ distiller:
   # For replacing CNN with mel spectrograms
   n_mels: 0
   able_log_mel: False
+  mel_spec_head_conv_layers: '[(128, 7, 1)] + [(256, 5, 1)] + [(512,5,1)] * 2'
 
   # Convolutional relative positional encoding
   conv_pos: 128

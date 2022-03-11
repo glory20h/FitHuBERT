@@ -28,6 +28,7 @@ distiller:
   fp16: True
   n_mels: 0
   able_log_mel: False
+  mel_spec_head_conv_layers: '[(128, 7, 1)] + [(256, 5, 1)] + [(512,5,1)] * 2'
   init_conv_layers: False
   init_encoder_layers: 2
   layer_norm_first: False
