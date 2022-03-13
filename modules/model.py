@@ -244,7 +244,7 @@ class CustomStudentModel(BaseFairseqModel):
     def __init__(
         self, 
         cfg: CustomStudentModelConfig,
-        teacher_model=None,
+        teacher_model=None, # Need to be Wrapper class. Please check utils/utils.py
         **kwargs,
     ):
         super().__init__()
@@ -301,6 +301,17 @@ class CustomStudentModel(BaseFairseqModel):
         self.init_conv_layers = cfg.init_conv_layers
         self.init_encoder_layers = cfg.init_encoder_layers
         self.teacher_task_agnostic = cfg.teacher_task_agnostic
+
+        # CNN distillation for encoder dimension mismatch
+        if teacher_model is not None:
+            if teacher_model.model.encoder.embedding_dim != cfg.encoder_embed_dim:
+                self.cnn_proj_head = nn.Sequential(
+                    nn.GELU(),
+                    nn.Linear(cfg.encoder_embed_dim,
+                              teacher_model.model.encoder.embedding_dim),
+                    )
+            else:
+                self.cnn_proj_head = None
 
         if self.init_conv_layers:
             assert teacher_model is not None
@@ -455,9 +466,10 @@ class CustomStudentModel(BaseFairseqModel):
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
-        # For different transformer dimension between teacher & student,
-        # Need to implement prediction head for dimension mistmatch
         features_to_distill = features
+
+        if self.cnn_proj_head is not None:
+            features_to_distill = self.cnn_proj_head(features_to_distill)
 
         features = self.dropout_input(features)
 
