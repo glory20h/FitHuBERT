@@ -10,7 +10,6 @@ import torchaudio
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from s3prl.optimizers import get_optimizer
-from pytorch_lightning.plugins import DDPPlugin
 
 from utils import *
 from modules.model import CustomStudentModelConfig, CustomStudentModel
@@ -492,7 +491,7 @@ if __name__ == '__main__':
 
     trainer = Trainer(
         gpus=gpus,
-        strategy=DDPPlugin(find_unused_parameters=False),
+        strategy='ddp',
         amp_backend=use_apex,
         precision=use_fp16,
         max_epochs=num_epochs,
