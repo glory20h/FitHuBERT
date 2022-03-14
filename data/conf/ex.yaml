@@ -70,9 +70,9 @@ distiller:
   # Dropout
   dropout: 0.1
   attention_dropout: 0.1
-  activation_dropout: 0.1 # or 0.0
+  activation_dropout: 0.0
   encoder_layerdrop: 0.0
-  dropout_input: 0.05 # or 0.1
+  dropout_input: 0.1
   # Output
   final_dim: 256
   pred_head_final_dim: 768  # --> Teacher model dependency should be disoluted
