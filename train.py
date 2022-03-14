@@ -39,7 +39,8 @@ class W2V2Distil(LightningModule):
         # Make student config independent of teacher
         self.model_cfg = self.yaml_cfg['distiller']
         student_config = CustomStudentModelConfig(**self.model_cfg)
-        student_config.teacher_task_agnostic = self.task_agnostic
+        student_config._teacher_task_agnostic = self.task_agnostic
+        student_config._cnn_weight = self.train_cfg['cnn_loss_weight']
 
         # TODO: how to make it save only once?
         # if self.trainer.is_global_zero:
@@ -76,7 +77,7 @@ class W2V2Distil(LightningModule):
                     bound_method = rtrn_attn_forward.__get__(layer, layer.__class__)
                     setattr(layer, 'forward', bound_method)
 
-        if self.train_cfg['no_projections']:
+        if self.train_cfg['delete_projections']:
             self.student_model._disable_projection_heads()
 
         if self.train_cfg['specaug']:
@@ -88,6 +89,8 @@ class W2V2Distil(LightningModule):
             self.num_encoders = self.model_cfg['encoder_layers']
             self.all_enc = range(self.num_encoders-1)
             self.rand_l = random.sample(self.all_enc, self.train_cfg['distil_random_layer'])
+        else:
+            assert self.train_cfg['random_layer_weight'] == 0
 
         self.batch_size = self.train_cfg['batch_size']
         self.num_gpus = self.train_cfg['gpus']

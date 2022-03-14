@@ -27,14 +27,14 @@ from pytorch_lightning.plugins import DDPPlugin
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'incs_ch-nocopytrf-0.1'
+OUTPUT_DIR = 'fit-mel512-specaug'
 #CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 
 # MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
-MODEL_CHECKPOINT = './results/pretrain/incs_ch-nocopytrf-0.1/last.ckpt'
+MODEL_CHECKPOINT = './results/pretrain/fit-mel512-specaug/last.ckpt'
 # MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
-MODEL_CONFIG = './results/pretrain/incs_ch-nocopytrf-0.1/2022-03-07_05h44m17s.yaml'
+MODEL_CONFIG = './results/pretrain/fit-mel512-specaug/2022-03-11_14h55m03s.yaml'
 
 DOWNSTREAM = 'asr'
 
