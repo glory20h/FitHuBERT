@@ -303,6 +303,7 @@ class CustomStudentModel(BaseFairseqModel):
         self.teacher_task_agnostic = cfg.teacher_task_agnostic
 
         # CNN distillation for encoder dimension mismatch
+        self.cnn_proj_head = None
         if teacher_model is not None:
             if teacher_model.model.encoder.embedding_dim != cfg.encoder_embed_dim:
                 self.cnn_proj_head = nn.Sequential(
@@ -310,8 +311,6 @@ class CustomStudentModel(BaseFairseqModel):
                     nn.Linear(cfg.encoder_embed_dim,
                               teacher_model.model.encoder.embedding_dim),
                     )
-            else:
-                self.cnn_proj_head = None
 
         if self.init_conv_layers:
             assert teacher_model is not None
