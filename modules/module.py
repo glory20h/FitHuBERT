@@ -212,7 +212,7 @@ class TransformerEncoder(nn.Module):
             tr_layer = None
         else:
             self.tr_reduce_factor = args.tr_reduce_factor
-            if args.type_of_tr_layer == 'fc1':
+            if args.tr_layer_type == 'fc1':
                 # Input length will be verified first.
                 tr_layer = nn.Linear(
                     self.embedding_dim * args.tr_reduce_factor,
@@ -220,14 +220,14 @@ class TransformerEncoder(nn.Module):
                 )
                 nn.init.xavier_uniform_(tr_layer.weight)
 
-            elif args.type_of_tr_layer == 'fc2':
+            elif args.tr_layer_type == 'fc2':
                 tr_layer = nn.Sequential(
                     nn.Linear(self.embedding_dim * args.tr_reduce_factor, self.embedding_dim * args.tr_reduce_factor),
                     nn.GELU(),
                     nn.Linear(self.embedding_dim * args.tr_reduce_factor, self.embedding_dim),
                 )
                 
-            elif args.type_of_tr_layer == 'conv1d':
+            elif args.tr_layer_type == 'conv1d':
                 tr_layer = nn.Conv1d(
                     self.embedding_dim,
                     self.embedding_dim,
