@@ -304,13 +304,11 @@ class CustomStudentModel(BaseFairseqModel):
 
         # CNN distillation for encoder dimension mismatch
         self.cnn_proj_head = None
-        if teacher_model is not None:
-            if teacher_model.model.encoder.embedding_dim != cfg.encoder_embed_dim:
-                self.cnn_proj_head = nn.Sequential(
-                    nn.GELU(),
-                    nn.Linear(cfg.encoder_embed_dim,
-                              teacher_model.model.encoder.embedding_dim),
-                    )
+        if cfg.pred_head_final_dim != cfg.encoder_embed_dim:
+            self.cnn_proj_head = nn.Sequential(
+                nn.GELU(),
+                nn.Linear(cfg.encoder_embed_dim, cfg.pred_head_final_dim),
+            )
 
         if self.init_conv_layers:
             assert teacher_model is not None
@@ -384,6 +382,7 @@ class CustomStudentModel(BaseFairseqModel):
             self.proj_head = None
         else:
             self.proj_head = None
+        self.cnn_proj_head = None
 
     def _upsample(self, x):
         if self.upsampler:
@@ -467,6 +466,7 @@ class CustomStudentModel(BaseFairseqModel):
 
         features_to_distill = features
 
+        # If dimension of teacher's cont
         if self.cnn_proj_head is not None:
             features_to_distill = self.cnn_proj_head(features_to_distill)
 
