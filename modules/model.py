@@ -67,7 +67,7 @@ class CustomStudentModelConfig(FairseqDataclass):
         }
     )
 
-    able_log_mel: bool = field(
+    enable_log_mel: bool = field(
         default=False,
         metadata={
             "help": "Take to log to melspectrogram"
@@ -76,10 +76,11 @@ class CustomStudentModelConfig(FairseqDataclass):
     )
 
     mel_spec_head_conv_layers: str = field(
-        default="[(128, 7, 1)] + [(256, 5, 1)] + [(512, 5, 1)] * 2",
+        default=None,
         metadata={
             "help": "string describing convolutional layers for MelSpecHead in form of a python list that contains "
             "[(dim, kernel_size, stride), ...], stride should always be fixed to 1."
+            " For example, [(128, 7, 1)] + [(256, 5, 1)] + [(512, 5, 1)] * 2"
         },
     )
 
@@ -195,7 +196,8 @@ class CustomStudentModelConfig(FairseqDataclass):
 
     pred_head_final_dim: int = field(
         default=768,
-        metadata={"help": "Final output dimension of prediction head"}
+        metadata={"help": "Final output dimension of prediction head"
+                          "Same as transformer hidden dimension of teacherm model"}
     )
 
     pred_layer_id: str = field(
@@ -213,20 +215,22 @@ class CustomStudentModelConfig(FairseqDataclass):
         default=True,
         metadata={"help": "applying time reduction layer or not"}
     )
-    
-    type_of_tr_layer: str = field(
-        default="fc1",
-        metadata={"help": "type of time reduction layer"}
-    )
-    
-    tr_conv1d_kernel_stride: str = field(
-        default="(2, 2)",
-        metadata={"help": "If tr is conv1d, list of kernel and stride for conv1d"}
-    )
-    
+
     tr_reduce_factor: int = field(
         default=2,
         metadata={"help": "Factor to reduce time length"}
+    )
+    
+    tr_layer_type: str = field(
+        default="fc1",
+        metadata={"help": "type of time reduction layer"
+                          "fc1 or fc2 or conv1d"}
+    )
+    
+    tr_conv1d_kernel: int = field(
+        default= 2,
+        metadata={"help": "If tr is conv1d, kernel for conv1d"
+                          "stride is fixed to <tr_reduce_factor>"}
     )
     
     tr_layer_index: int = field(
@@ -234,11 +238,17 @@ class CustomStudentModelConfig(FairseqDataclass):
         metadata={"help": "In which index should the time reduction layer be inserted"}
     )
 
-    teacher_task_agnostic: bool = field(
-        default=True,
-        metadata={"help": "Flag to determine whether the teacher model is task-agnostic"}
+    _teacher_task_agnostic: bool = field(
+        default=False,
+        metadata={"help": "Flag to determine whether the teacher model is task-agnostic"
+                          "Do not assign value to this variable manually"}
     )
 
+    _cnn_weight: float = field(
+        default=0.0,
+        metadata={"help": "Weight of CNN_loss"
+                          "Do not assign value to this variable manually"}
+    )
 
 class CustomStudentModel(BaseFairseqModel):
     def __init__(
@@ -253,10 +263,9 @@ class CustomStudentModel(BaseFairseqModel):
         self.n_mels = cfg.n_mels
         if self.n_mels <= 0:
             # Must be turned off for using cnn feature extractor
-            assert cfg.able_log_mel == False
+            assert cfg.enable_log_mel == False
             feature_enc_layers = eval(cfg.conv_feature_layers)
-            self.embed = feature_enc_layers[-1][0] # embedding dimension
-
+            self.embed = feature_enc_layers[-1][0] # final embedding dimension of feature extractor
             self.feature_extractor = ConvFeatureExtractionModel(
                 conv_layers=feature_enc_layers,
                 dropout=0.0,
@@ -264,11 +273,10 @@ class CustomStudentModel(BaseFairseqModel):
                 conv_bias=cfg.conv_bias,
             )
         else:
-            self.able_log_mel = cfg.able_log_mel
-            mel_spec_head_conv_layers = eval(cfg.mel_spec_head_conv_layers)
-            self.embed = mel_spec_head_conv_layers[-1][0]
+            self.enable_log_mel = cfg.enable_log_mel
             self.feature_extractor = None
             # Changed to torchaudio melspectrogram
+            # Do not change other arguments
             self.mel_transform = MelSpectrogram(
                 sample_rate = 16000,
                 n_fft = 400,
@@ -276,16 +284,29 @@ class CustomStudentModel(BaseFairseqModel):
                 hop_length = 320,
                 center = False
             )
-            self.mel_spec_head = MelSpecHead(
-                n_mels=cfg.n_mels,
-                conv_layers=mel_spec_head_conv_layers
-            )
+            self.embed = self.n_mels
+            self.mel_spec_head = None
+            if cfg.mel_spec_head_conv_layers is not None:
+                mel_spec_head_conv_layers = eval(cfg.mel_spec_head_conv_layers)
+                self.mel_spec_head = MelSpecHead(
+                    n_mels=cfg.n_mels,
+                    conv_layers=mel_spec_head_conv_layers
+                )
+                self.embed = mel_spec_head_conv_layers[-1][0]  
 
         self.post_extract_proj = (
             nn.Linear(self.embed, cfg.encoder_embed_dim)
             if self.embed != cfg.encoder_embed_dim
             else None
         )
+
+        # CNN distillation for encoder dimension mismatch
+        self.cnn_proj_head = None
+        if cfg.pred_head_final_dim != cfg.encoder_embed_dim and cfg._cnn_weight > 0:
+            self.cnn_proj_head = nn.Sequential(
+                nn.GELU(),
+                nn.Linear(cfg.encoder_embed_dim, cfg.pred_head_final_dim),
+            )
 
         self.crop_seq_to_multiple = cfg.crop_seq_to_multiple
         self.dropout_input = nn.Dropout(cfg.dropout_input)
@@ -300,15 +321,7 @@ class CustomStudentModel(BaseFairseqModel):
 
         self.init_conv_layers = cfg.init_conv_layers
         self.init_encoder_layers = cfg.init_encoder_layers
-        self.teacher_task_agnostic = cfg.teacher_task_agnostic
-
-        # CNN distillation for encoder dimension mismatch
-        self.cnn_proj_head = None
-        if cfg.pred_head_final_dim != cfg.encoder_embed_dim:
-            self.cnn_proj_head = nn.Sequential(
-                nn.GELU(),
-                nn.Linear(cfg.encoder_embed_dim, cfg.pred_head_final_dim),
-            )
+        self._teacher_task_agnostic = cfg._teacher_task_agnostic
 
         if self.init_conv_layers:
             assert teacher_model is not None
@@ -395,13 +408,13 @@ class CustomStudentModel(BaseFairseqModel):
     def mel_spec_forward(self, source):
         # source: B X T
 
-        batch_mel_spc = self.mel_transform(source + 1e-15)
+        batch_mel_spec = self.mel_transform(source)
 
-        if self.able_log_mel:
-            batch_mel_spc = torch.log(batch_mel_spc)
+        if self.enable_log_mel:
+            batch_mel_spec = torch.log(batch_mel_spec + 1e-15)
 
         # return: B X n_mels(C) X T'
-        return batch_mel_spc
+        return batch_mel_spec
 
     def forward(
         self,
@@ -423,9 +436,11 @@ class CustomStudentModel(BaseFairseqModel):
             # Apply SpecAug on extracted features
             # Input feature must be shape of B X T' X D
             if self.specaug:
-                feats, _ = self.specaug(features)
-                features = torch.stack(feats)
-            features = self.mel_spec_head(features)
+                spec_feats, _ = self.specaug(features)
+                features = torch.stack(spec_feats)
+
+            if self.mel_spec_head is not None:
+                features = self.mel_spec_head(features)
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
@@ -542,7 +557,7 @@ class CustomStudentModel(BaseFairseqModel):
         return res
 
     def init_from_teacher_conv(self, teacher_model):
-        if not self.teacher_task_agnostic:
+        if not self._teacher_task_agnostic:
             teacher_model = teacher_model.model.w2v_encoder.w2v_model
 
         self.feature_extractor.load_state_dict(
@@ -559,7 +574,7 @@ class CustomStudentModel(BaseFairseqModel):
     def init_from_teacher_enc(self, teacher_model, n_layers):
         assert n_layers <= self.cfg.encoder_layers
 
-        if not self.teacher_task_agnostic:
+        if not self._teacher_task_agnostic:
             teacher_model = teacher_model.model.w2v_encoder.w2v_model
 
         self.encoder.pos_conv.load_state_dict(
