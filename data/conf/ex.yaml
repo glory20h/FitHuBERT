@@ -1,73 +1,98 @@
 teacher:
-  teacher_model: '../parameters/hubert_base_ls960.pt'
+  teacher_model: '../parameters/hubert/hubert_base_ls960.pt'
   # teacher_model: 'wav2vec_small.pt'
 
-distiller:
-  activation_dropout: 0.0
-  activation_fn: gelu
-  attention_dropout: 0.1
-  attn_type: ''
-  checkpoint_activations: False
-  conv_bias: False
-  conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512, 2, 2)] * 2'
-  conv_pos: 128
-  conv_pos_groups: 16
-  crop_seq_to_multiple: 1
-  depthwise_conv_kernel_size: 31
-  dropout: 0.1
-  dropout_input: 0.1
-  enable_tr_layer: False
-  encoder_attention_heads: 12
-  encoder_embed_dim: 768
-  encoder_ffn_embed_dim: 3072
-  encoder_layerdrop: 0.0
-  encoder_layers: 2   # student_encoder_layers = 2
-  extractor_mode: default
-  feature_grad_mult: 0.1
-  final_dim: 256
-  fp16: True
-  n_mels: 0
-  able_log_mel: False
-  mel_spec_head_conv_layers: '[(128, 7, 1)] + [(256, 5, 1)] + [(512,5,1)] * 2'
-  init_conv_layers: False
-  init_encoder_layers: 2
-  layer_norm_first: False
-  layer_type: transformer
-  layerwise_proj: False
-  max_positions: 100000
-  pos_conv_depth: 1
-  pos_enc_type: abs
-  pred_head_final_dim: 768
-  pred_head_inter_dim: 0
-  pred_layer_id: '[3, 7, 11]'
-  required_seq_len_multiple: 1
-  tr_conv1d_kernel_stride: (2, 2)
-  tr_layer_index: 1
-  tr_reduce_factor: 2
-  type_of_tr_layer: fc2
-
 train:
-  output_dir: 'mel80-copy'
+  # General setting
+  output_dir: 'test'
   checkpoint:
   num_epochs: 100
+  gpus: 2
+  batch_size: 4
+  accumulate_grad_batches: 3
+  use_fp16: False
+  use_apex: True
+  # Loss setting
+  monitor_losses: True
+  # CNN loss
+  # : Loss between post extractor projections(or CNN prediction head)
+  #   after CNN feature extractor
   cnn_loss_weight: 0
+  # Similarity & Reconstruction loss
+  # : Layerwise loss between intermediate layer representations
+  #   Check <pred_layer_id> below
   rec_loss_weight: 1.0
   rec_loss_type: l1
   sim_loss_weight: 1.0
+  # Attention & Value loss
+  # : Loss between final layer's attention distribution & value
   attn_loss_weight: 0
-  attn_loss_type: 'kldiv'
+  attn_loss_type: kldiv
   v_rel_loss_weight: 0
-  gpus: 2
-  batch_size: 8
-  accumulate_grad_batches: 3
-  use_fp16: True
-  use_apex: False
-  monitor_losses: True
-  use_gt_for_ctc: True
-  no_projections: False
+  # Random layer distillation loss
+  # : Pick random intermediate layer as many as <distil_random_layer>
+  #   and apply MSE loss
   distil_random_layer: 0
-  random_layer_weight: 0.1
+  random_layer_weight: 0 # 0.1
+  # Other
   specaug: False
+  delete_projections: False  # --> for when?
+  use_gt_for_ctc: True
+
+distiller:
+  # CNN feature extractor
+  extractor_mode: default
+  conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512, 2, 2)] * 2'
+  feature_grad_mult: 0.1
+  conv_bias: False
+  # Replace CNN feature extractor to mel-spectrogram
+  n_mels: 0
+  enable_log_mel: False
+  mel_spec_head_conv_layers: None
+  # CNN relative positional encoding
+  conv_pos: 128
+  conv_pos_groups: 16
+  pos_conv_depth: 1
+  max_positions: 100000
+  # Transformoer encoder
+  layer_type: transformer
+  encoder_layers: 2
+  encoder_embed_dim: 768
+  encoder_ffn_embed_dim: 3072
+  encoder_attention_heads: 12
+  activation_fn: gelu
+  layer_norm_first: False
+  # Conformer encoder
+  depthwise_conv_kernel_size: 31
+  attn_type: ''
+  pos_enc_type: abs
+  fp16: True
+  # Dropout
+  dropout: 0.1
+  attention_dropout: 0.1
+  activation_dropout: 0.1 # or 0.0
+  encoder_layerdrop: 0.0
+  dropout_input: 0.05 # or 0.1
+  # Output
+  final_dim: 256
+  pred_head_final_dim: 768  # --> Teacher model dependency should be disoluted
+  pred_head_inter_dim: 0
+  # Task & Loss  --> Need to be moved to train?
+  layerwise_proj: False
+  pred_layer_id: '[3, 7, 11]'
+  # Time-reduction layer (Only single)
+  enable_tr_layer: False
+  tr_layer_type: conv1d
+  tr_reduce_factor: 2
+  tr_conv1d_kernel: 2
+  tr_layer_index: 0
+  # Model initialization
+  init_conv_layers: True
+  init_encoder_layers: 2
+  # Other
+  checkpoint_activations: False
+  crop_seq_to_multiple: 1
+  required_seq_len_multiple: 1
 
 optimizer:
   name: AdamW_with_schedule
@@ -85,7 +110,7 @@ data:
   test_set: ['test-clean']
 
 specaug:
-  adaptive: false
+  adaptive: False
   adaptive_number_ratio: 0.04
   adaptive_size_ratio: 0.04
   max_n_time_masks: 20
@@ -98,3 +123,9 @@ specaug:
   freq_mask_width_range: [0, 27]
   num_freq_mask: 2
   num_time_mask: 2
+
+## Name changed log
+#  no_projections -> delete_projections
+#  able_log_mel -> enable_log_mel
+#  type_of_tr_layer -> tr_layer_type
+#  tr_conv1d_kernel_stride: Tuple(int, int) -> tr_conv1d_kernel: int

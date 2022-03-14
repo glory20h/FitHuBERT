@@ -1,9 +1,9 @@
 # Example config (This setting reproduces DistilHuBERT)
-
 teacher:
   teacher_model: 'hubert_base_ls960.pt'
 
 train:
+  # General setting
   output_dir: 'distilhubert-960h' 
   checkpoint:
   num_epochs: 150
@@ -12,38 +12,48 @@ train:
   accumulate_grad_batches: 4
   use_fp16: True
   use_apex: False
+  # Loss setting
   monitor_losses: True
+  # CNN loss
+  # : Loss between post extractor projections(or CNN prediction head)
+  #   after CNN feature extractor
   cnn_loss_weight: 0
+  # Similarity & Reconstruction loss
+  # : Layerwise loss between intermediate layer representations
+  #   Check <pred_layer_id> below
   rec_loss_weight: 1.0
   rec_loss_type: l1
   sim_loss_weight: 1.0
+  # Attention & Value loss
+  # : Loss between final layer's attention distribution & value 
   attn_loss_weight: 0
   attn_loss_type: kldiv
   v_rel_loss_weight: 0
+  # Random layer distillation loss
+  # : Pick random intermediate layer as many as <distil_random_layer>
+  #   and apply MSE loss
   distil_random_layer: 0  # 0 -> DistilHuBERT style distillation
-  random_layer_weight: 0.1
-  no_projections: False
+  random_layer_weight: 0
+  # Other
   specaug: False
+  delete_projections: False
   use_gt_for_ctc: True
 
 distiller:
-  # Extractor
+  # CNN feature extractor
   extractor_mode: default
   conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] * 2'
   feature_grad_mult: 0.1
   conv_bias: False
-
-  # For replacing CNN with mel spectrograms
+  # Replace CNN feature extractor to mel-spectrogram
   n_mels: 0
-  able_log_mel: False
-  mel_spec_head_conv_layers: '[(128, 7, 1)] + [(256, 5, 1)] + [(512,5,1)] * 2'
-
+  enable_log_mel: False
+  mel_spec_head_conv_layers:
   # Convolutional relative positional encoding
   conv_pos: 128
   conv_pos_groups: 16
   pos_conv_depth: 1
   max_positions: 100000
-
   # Transformer encoder
   layer_type: transformer
   encoder_layers: 2
@@ -57,34 +67,28 @@ distiller:
   attn_type: ''
   pos_enc_type: abs
   fp16: True
-
   # Dropout
   dropout: 0.1
   attention_dropout: 0.1
   activation_dropout: 0.1
   encoder_layerdrop: 0.0
   dropout_input: 0.05
-
   # Output
   final_dim: 256
   pred_head_final_dim: 768
   pred_head_inter_dim: 0
-
   # Task & loss
   layerwise_proj: False
   pred_layer_id: '[3, 7, 11]'
-
+  # Time-reduction layer (Only single)
+  enable_tr_layer: False
+  tr_layer_type: conv1d
+  tr_reduce_factor: 2
+  tr_conv1d_kernel: 2
+  tr_layer_index: 0 
   # Initialization
   init_conv_layers: True
-  init_encoder_layers: 0
-
-  # Time-reduction layer
-  enable_tr_layer: False
-  tr_conv1d_kernel_stride: (2, 2)
-  tr_layer_index: 1
-  tr_reduce_factor: 2
-  type_of_tr_layer: conv1d
-  
+  init_encoder_layers: 2
   # Other
   checkpoint_activations: False
   required_seq_len_multiple: 1
@@ -105,7 +109,7 @@ data:
   test_set: ['test-clean']
 
 specaug:
-  adaptive: false
+  adaptive: False
   adaptive_number_ratio: 0.04
   adaptive_size_ratio: 0.04
   max_n_time_masks: 20
