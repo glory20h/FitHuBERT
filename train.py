@@ -472,9 +472,6 @@ if __name__ == '__main__':
 
     model = W2V2Distil(cfg = YAML_CFG)
 
-    if checkpoint:
-        model = model.load_from_checkpoint(os.path.join(output_dir, checkpoint), cfg=YAML_CFG)
-
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir,
         filename='checkpoint-{epoch:02d}',
@@ -506,6 +503,9 @@ if __name__ == '__main__':
     if args.test:
         trainer.test(model)
     else:
-        trainer.fit(model)
+        trainer.fit(
+            model, 
+            ckpt_path=os.path.join(output_dir, checkpoint) if checkpoint else None
+        )
 
  
