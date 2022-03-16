@@ -22,24 +22,30 @@ reload(logging)
 from pytorch_lightning import LightningModule, Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.plugins import DDPPlugin
 
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'fit-mel512-specaug'
-#CHECKPOINT = 'last.ckpt'
+OUTPUT_DIR = 'IC-test'
+# CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 
-# MODEL_CHECKPOINT = './results/pretrain/hubert-512D-8H-6L/last.ckpt'
-MODEL_CHECKPOINT = './results/pretrain/fit-mel512-specaug/last.ckpt'
-# MODEL_CONFIG = './results/pretrain/hubert-512D-8H-6L/2022-02-18_20h09m21s.yaml'
-MODEL_CONFIG = './results/pretrain/fit-mel512-specaug/2022-03-11_14h55m03s.yaml'
+MODEL_CHECKPOINT = './results/pretrain/FitHuBERT/last.ckpt'
+# MODEL_CHECKPOINT = None
+MODEL_CONFIG = './results/pretrain/FitHuBERT/2022-03-02_18h14m29s.yaml'
+# MODEL_CONFIG = None
 
-DOWNSTREAM = 'asr'
+# DOWNSTREAM = 'ASR'
+# DOWNSTREAM = 'SID'
+DOWNSTREAM = 'IC'
+
+# DOWNSTREAM = 'ASV' # -> Work in Progress
+# DOWNSTREAM = 'PR' # -> Work in Progress
+# DOWNSTREAM = 'KS'
 
 UPSTREAM = 'test'
-#UPSTREAM = 'distilhubert'
+# UPSTREAM = 'distilhubert'
+# UPSTREAM = 'wav2vec2'
 UPSTREAM_TRAINABLE = False
 # UPSTREAM_TRAINABLE = True
 UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
@@ -47,18 +53,23 @@ UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
 UPSTREAM_LAYER_SELECTION = None
 
 # Training related
-GPUS = 2
+GPUS = 4
 ACCUMULATE_GRAD_BATCHES = 1
+LEARNING_RATE = None  # None: use default value(1e-4)
 
 SEED = 1339
 
-LIBRI_ROOT = '../db/LibriSpeech'
 S3PRL_ROOT = '../s3prl/s3prl'
+
+LIBRI_ROOT = '../LibriSpeech' # ASR & PR
+VOXCELEB_ROOT = '../VoxCeleb1' # SID & ASV
+FLUENT_ROOT = '../fluent_speech_commands_dataset' # IC
+CORPORA_ROOT = '../CORPORA_DIR' # KS
 
 # Evaluation related
 TEST = False
 # TEST = True
-TEST_SPLIT = 'test-clean' # default: 'test'
+TEST_SPLIT = 'test' # default
 # --------------------------------------
 
 # TODO: find out what's the cause of dangling memory references
@@ -106,7 +117,10 @@ class W2V2Downstream(LightningModule):
             self.specaug = SpecAug(**self.config["specaug"])
 
         self.train_split = self.config['runner'].get("train_dataloader", "train")
-        self.eval_split = self.config['runner']['eval_dataloaders'][0]
+        if self.config['runner']['eval_dataloaders']:
+            self.eval_split = self.config['runner']['eval_dataloaders'][0]
+        else:
+            self.eval_split = None
         self.test_split = TEST_SPLIT
 
         self.eval_batch_size = self.config['downstream_expert']['datarc']['eval_batch_size']
@@ -161,7 +175,6 @@ class W2V2Downstream(LightningModule):
         }
 
     def forward(self, wavs):
-
         wavs = [torch.FloatTensor(wav).to(self.device) for wav in wavs]
 
         features = self.model(wavs)
@@ -205,20 +218,40 @@ class W2V2Downstream(LightningModule):
         )
 
     def validation_epoch_end(self, validation_step_outputs):
-        loss = torch.FloatTensor(self.eval_records['loss']).mean().item()
+        # asr
+        if DOWNSTREAM == 'asr':
+            loss = torch.FloatTensor(self.eval_records['loss']).mean().item()
 
-        # TODO: generalize to other tasks
-        uer, wer = self.downstream._compute_metrics(
-            self.eval_records['target_tokens'],
-            self.eval_records['target_words'],
-            self.eval_records['pred_tokens'],
-            self.eval_records['pred_words'],
-        )
+            uer, wer = self.downstream._compute_metrics(
+                self.eval_records['target_tokens'],
+                self.eval_records['target_words'],
+                self.eval_records['pred_tokens'],
+                self.eval_records['pred_words'],
+            )
 
-        self.log("v_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
-        self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
-        self.log("uer", uer, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
+            values = {'v_loss': loss, 'wer': wer, 'uer': uer}
+        # sid
+        elif DOWNSTREAM == 'voxceleb1': 
+            acc = torch.FloatTensor(self.eval_records['acc']).mean().item()
+            loss = torch.FloatTensor(self.eval_records['loss']).mean().item()
 
+            values = {'v_loss': loss, 'acc': acc}
+        # ic
+        elif DOWNSTREAM == 'fluent_commands': 
+            acc = torch.FloatTensor(self.eval_records['acc']).mean().item()
+            loss = torch.FloatTensor(self.eval_records['intent_loss']).mean().item()
+
+            values = {'v_loss': loss, 'acc': acc}
+        # asv
+        elif DOWNSTREAM == 'sv_voxceleb1':
+            eer, *others = self.downstream.eval_metric(
+                np.array(self.eval_records['labels']), 
+                np.array(self.eval_records['scores'])
+            )
+
+            values = {'eer': eer}
+
+        self.log_dict(values, on_epoch=True, prog_bar=True)
         self.eval_records = defaultdict(list)
 
     def test_step(self, batch, batch_idx):
@@ -233,20 +266,44 @@ class W2V2Downstream(LightningModule):
         )
         
     def test_epoch_end(self, test_step_outputs):
-        loss = torch.FloatTensor(self.test_records['loss']).mean().item()
+        # asr
+        if DOWNSTREAM == 'asr':
+            loss = torch.FloatTensor(self.test_records['loss']).mean().item()
 
-        # TODO: generalize to other tasks
-        uer, wer = self.downstream._compute_metrics(
-            self.test_records['target_tokens'],
-            self.test_records['target_words'],
-            self.test_records['pred_tokens'],
-            self.test_records['pred_words'],
-        )
+            uer, wer = self.downstream._compute_metrics(
+                self.test_records['target_tokens'],
+                self.test_records['target_words'],
+                self.test_records['pred_tokens'],
+                self.test_records['pred_words'],
+            )
 
-        self.log("test_loss", loss, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
-        self.log("wer", wer, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
-        self.log("uer", uer, on_epoch=True, prog_bar=True, batch_size=self.eval_batch_size)
+            values = {'test_loss': loss, 'wer': wer, 'uer': uer}
+        # sid
+        elif DOWNSTREAM == 'voxceleb1': 
+            values = {}
 
+            acc = torch.FloatTensor(self.test_records['acc']).mean().item()
+            loss = torch.FloatTensor(self.test_records['loss']).mean().item()
+
+            values = {'test_loss': loss, 'acc': acc}
+        # ic
+        elif DOWNSTREAM == 'fluent_commands': 
+            values = {}
+
+            acc = torch.FloatTensor(self.test_records['acc']).mean().item()
+            loss = torch.FloatTensor(self.test_records['intent_loss']).mean().item()
+
+            values = {'test_loss': loss, 'acc': acc}
+        # asv
+        elif DOWNSTREAM == 'sv_voxceleb1':
+            eer, *others = self.downstream.eval_metric(
+                np.array(self.test_records['labels']), 
+                np.array(self.test_records['scores'])
+            )
+
+            values = {'eer': eer}
+
+        self.log_dict(values, on_epoch=True, prog_bar=True)
         self.test_records = defaultdict(list)
 
     def train_dataloader(self):
@@ -280,6 +337,17 @@ class W2V2Downstream(LightningModule):
         return tqdm_dict
 
 
+def get_default_config(downstream):
+    # Load downstream-specific config from yaml
+    if downstream == 'ctc':
+        config = os.path.join(S3PRL_ROOT, f'downstream/{downstream}/libriphone.yaml')
+    else:
+        config = os.path.join(S3PRL_ROOT, f'downstream/{downstream}/config.yaml')
+    with open(config, 'r') as file:
+        config = yaml.load(file, Loader=yaml.FullLoader)
+
+    return config
+
 if __name__ == '__main__':
     output_dir = f'results/downstream/{OUTPUT_DIR}'
     os.makedirs(output_dir, exist_ok=True)
@@ -289,26 +357,81 @@ if __name__ == '__main__':
 
     # TODO: convert all ARGS to args (with parser or yaml)
     args = None
+    config = None
 
-    # Load downstream-specific config from yaml
-    config = os.path.join(S3PRL_ROOT, f'downstream/{DOWNSTREAM}/config.yaml')
-    with open(config, 'r') as file:
-        config = yaml.load(file, Loader=yaml.FullLoader)
+    # Update downstream name
+    if DOWNSTREAM == 'ASR':
+        DOWNSTREAM = 'asr'
+        monitor = 'wer'
+        monitor_mode = 'min'
+        TEST_SPLIT = 'test-clean'
 
-    # Update downstream config
-    config['downstream_expert']['datarc']['libri_root'] = LIBRI_ROOT
-    config['downstream_expert']['datarc']['bucket_file'] = './data/len_for_bucket'
-    config['downstream_expert']['datarc']['dict_path'] = S3PRL_ROOT + '/downstream/asr/char.dict'
-    config['downstream_expert']['datarc']['train_batch_size'] = (
-        config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
-    )
-    config['downstream_expert']['datarc']['batch_size'] = (
-        config['downstream_expert']['datarc']['batch_size'] // ACCUMULATE_GRAD_BATCHES
-    )
+        config = get_default_config(DOWNSTREAM)
+        config['downstream_expert']['datarc']['libri_root'] = LIBRI_ROOT
+        config['downstream_expert']['datarc']['bucket_file'] = './data/len_for_bucket'
+        config['downstream_expert']['datarc']['dict_path'] = S3PRL_ROOT + '/downstream/asr/char.dict'
+        config['downstream_expert']['datarc']['train_batch_size'] = (
+            config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
+        )
+        config['downstream_expert']['datarc']['batch_size'] = (
+            config['downstream_expert']['datarc']['batch_size'] // ACCUMULATE_GRAD_BATCHES
+        )
+    elif DOWNSTREAM == 'SID':
+        DOWNSTREAM = 'voxceleb1'
+        monitor = 'acc'
+        monitor_mode = 'max'
 
+        config = get_default_config(DOWNSTREAM)
+        config['downstream_expert']['datarc']['file_path'] = VOXCELEB_ROOT
+        config['downstream_expert']['datarc']['meta_data'] = S3PRL_ROOT + '/downstream/voxceleb1/veri_test_class.txt'
+        config['downstream_expert']['datarc']['train_batch_size'] = (
+            config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
+        )
+    elif DOWNSTREAM == 'IC':
+        DOWNSTREAM = 'fluent_commands'
+        monitor = 'acc'
+        monitor_mode = 'max'
+
+        config = get_default_config(DOWNSTREAM)
+        config['downstream_expert']['datarc']['file_path'] = FLUENT_ROOT
+        config['downstream_expert']['datarc']['train_batch_size'] = (
+            config['downstream_expert']['datarc']['train_batch_size'] // ACCUMULATE_GRAD_BATCHES
+        )
+    elif DOWNSTREAM == 'ASV':
+        DOWNSTREAM = 'sv_voxceleb1'
+        monitor = 'eer'
+        monitor_mode = 'min'
+        TEST_SPLIT = None
+
+        config = get_default_config(DOWNSTREAM)
+        config['downstream_expert']['datarc']['file_path'] = VOXCELEB_ROOT
+        config['downstream_expert']['datarc']['train_meta_data'] = S3PRL_ROOT + '/downstream/sv_voxceleb1/dev_meta_data/dev_speaker_ids.txt'
+        config['downstream_expert']['datarc']['dev_meta_data'] = S3PRL_ROOT + '/downstream/sv_voxceleb1/dev_meta_data/dev_meta_data.txt'
+        config['downstream_expert']['datarc']['test_meta_data'] = S3PRL_ROOT + '/downstream/sv_voxceleb1/voxceleb1_test_v2.txt'
+    elif DOWNSTREAM == 'PR':
+        DOWNSTREAM = 'ctc'
+        config = os.path.join(S3PRL_ROOT, f'downstream/{DOWNSTREAM}/libriphone.yaml')
+
+        config = get_default_config(DOWNSTREAM)
+        config['downstream_expert']['corpus']['path'] = LIBRI_ROOT
+    elif DOWNSTREAM == 'KS':
+        DOWNSTREAM = 'speech_commands'
+        monitor = 'acc'
+        monitor_mode = 'max'
+
+        config = get_default_config(DOWNSTREAM)
+        config['downstream_expert']['datarc']['speech_commands_root'] = CORPORA_ROOT + '/speech_commands_v0.01/'
+        config['downstream_expert']['datarc']['speech_commands_test_root'] = CORPORA_ROOT + '/speech_commands_test_set_v0.01/'
+        config['downstream_expert']['datarc']['batch_size'] = (
+            config['downstream_expert']['datarc']['batch_size'] // ACCUMULATE_GRAD_BATCHES
+        )
+        
     config['runner']['total_steps'] = (
-        config['runner']['total_steps'] // (len(GPUS) if isinstance(GPUS, list) else GPUS)
+        (config['runner']['total_steps'] // (len(GPUS) if isinstance(GPUS, list) else GPUS)) * ACCUMULATE_GRAD_BATCHES
     )   # -> TODO: must verify this
+
+    if LEARNING_RATE:
+        config['optimizer']['lr'] = LEARNING_RATE
 
     # Dump args as yaml file
     if args is not None:
@@ -324,21 +447,18 @@ if __name__ == '__main__':
         config=config,
     )
 
-    if CHECKPOINT:
-        model = model.load_from_checkpoint(os.path.join(output_dir, CHECKPOINT))
-
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir,
         filename='checkpoint-{epoch:02d}',
         verbose=True,
         save_last=True,
         save_top_k=1,
-        monitor='wer',
+        monitor=monitor,
         mode='min'
     )
 
     early_stopping = EarlyStopping(
-        monitor='wer',
+        monitor=monitor,
         patience=15,
         verbose=True,
         mode='min'
@@ -346,21 +466,24 @@ if __name__ == '__main__':
 
     trainer = Trainer(
         gpus=GPUS,
-        strategy=DDPPlugin(find_unused_parameters=False),
-        amp_backend="apex",
-        amp_level="O2",
-        #precision=16,
-        max_steps=config['runner']['total_steps'], # -> TODO: must verify this
+        strategy='ddp',
+        # amp_backend="apex",
+        # amp_level="O2",
+        # precision=16,
+        max_steps=config['runner']['total_steps'],
         sync_batchnorm=True,
         # deterministic=True,   # -> For some reason produces error!
         accumulate_grad_batches=ACCUMULATE_GRAD_BATCHES,
         gradient_clip_val=config['runner']['gradient_clipping'],
-        callbacks=[checkpoint_callback]
-        )
+        callbacks=[checkpoint_callback],
+    )
 
     if TEST:
         trainer.test(model)
     else:
-        trainer.fit(model)
+        trainer.fit(
+            model, 
+            ckpt_path=os.path.join(output_dir, CHECKPOINT) if CHECKPOINT else None
+        )
 
     
