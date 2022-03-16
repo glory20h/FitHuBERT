@@ -76,7 +76,7 @@ class CustomStudentModelConfig(FairseqDataclass):
     )
 
     mel_spec_head_conv_layers: str = field(
-        default=None,
+        default= "",
         metadata={
             "help": "string describing convolutional layers for MelSpecHead in form of a python list that contains "
             "[(dim, kernel_size, stride), ...], stride should always be fixed to 1."
@@ -286,7 +286,7 @@ class CustomStudentModel(BaseFairseqModel):
             )
             self.embed = self.n_mels
             self.mel_spec_head = None
-            if cfg.mel_spec_head_conv_layers is not None:
+            if cfg.mel_spec_head_conv_layers != str(None):
                 mel_spec_head_conv_layers = eval(cfg.mel_spec_head_conv_layers)
                 self.mel_spec_head = MelSpecHead(
                     n_mels=cfg.n_mels,
