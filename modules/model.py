@@ -286,7 +286,8 @@ class CustomStudentModel(BaseFairseqModel):
             )
             self.embed = self.n_mels
             self.mel_spec_head = None
-            if cfg.mel_spec_head_conv_layers != str(None):
+            if cfg.mel_spec_head_conv_layers is not None:
+                assert len(type(eval(cfg.mel_spec_head_conv_layers))) == 3
                 mel_spec_head_conv_layers = eval(cfg.mel_spec_head_conv_layers)
                 self.mel_spec_head = MelSpecHead(
                     n_mels=cfg.n_mels,

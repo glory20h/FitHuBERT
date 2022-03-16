@@ -42,7 +42,7 @@ train:
 distiller:
   # CNN feature extractor
   extractor_mode: default
-  conv_feature_layers: '[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512, 2, 2)] * 2'
+  conv_feature_layers:
   feature_grad_mult: 0.1
   conv_bias: False
   # Replace CNN feature extractor to mel-spectrogram
