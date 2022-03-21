@@ -28,7 +28,7 @@ distiller:
   # Extractor
   extractor_mode: default
   conv_feature_layers: '[(128, 10, 5)] + [(256, 1, 1)] + [(256, 3, 2)] * 4 + [(512, 1, 1)] + [(512, 2, 2)] * 2'
-  feature_grad_mult: 1.0
+  feature_grad_mult: 0.1
   conv_bias: False
 
   # For replacing CNN with mel spectrograms
