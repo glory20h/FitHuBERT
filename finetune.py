@@ -65,8 +65,8 @@ FLUENT_ROOT = '../fluent_speech_commands_dataset' # IC
 CORPORA_ROOT = '../CORPORA_DIR' # KS
 
 # Evaluation related
-# TEST = False
-TEST = True
+TEST = False
+# TEST = True
 TEST_SPLIT = 'test' # default
 # --------------------------------------
 
@@ -477,6 +477,7 @@ if __name__ == '__main__':
     )
 
     if TEST:
+        model = model.load_from_checkpoint(os.path.join(output_dir, CHECKPOINT))
         trainer.test(model)
     else:
         trainer.fit(
