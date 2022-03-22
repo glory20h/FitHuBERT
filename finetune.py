@@ -26,18 +26,16 @@ from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 # ARGS -------------------------------- <- Some of these should be updated from downstream's config.yaml!!!
 
 # Checkpoint related
-OUTPUT_DIR = 'IC-test'
+OUTPUT_DIR = 'FitHuBERT-abl-notr-ASR'
 # CHECKPOINT = 'last.ckpt'
 CHECKPOINT = None
 
-MODEL_CHECKPOINT = './results/pretrain/FitHuBERT/last.ckpt'
-# MODEL_CHECKPOINT = None
-MODEL_CONFIG = './results/pretrain/FitHuBERT/2022-03-02_18h14m29s.yaml'
-# MODEL_CONFIG = None
+MODEL_CHECKPOINT = './results/pretrain/FitHuBERT-abl-notr/last.ckpt'
+MODEL_CONFIG = './results/pretrain/FitHuBERT-abl-notr/2022-03-20_01h29m09s.yaml'
 
-# DOWNSTREAM = 'ASR'
+DOWNSTREAM = 'ASR'
 # DOWNSTREAM = 'SID'
-DOWNSTREAM = 'IC'
+# DOWNSTREAM = 'IC'
 
 # DOWNSTREAM = 'ASV' # -> Work in Progress
 # DOWNSTREAM = 'PR' # -> Work in Progress
@@ -53,7 +51,7 @@ UPSTREAM_FEATURE_SELECTION = 'last_hidden_state'
 UPSTREAM_LAYER_SELECTION = None
 
 # Training related
-GPUS = 4
+GPUS = 2
 ACCUMULATE_GRAD_BATCHES = 1
 LEARNING_RATE = None  # None: use default value(1e-4)
 
@@ -67,8 +65,8 @@ FLUENT_ROOT = '../fluent_speech_commands_dataset' # IC
 CORPORA_ROOT = '../CORPORA_DIR' # KS
 
 # Evaluation related
-TEST = False
-# TEST = True
+# TEST = False
+TEST = True
 TEST_SPLIT = 'test' # default
 # --------------------------------------
 
@@ -454,14 +452,14 @@ if __name__ == '__main__':
         save_last=True,
         save_top_k=1,
         monitor=monitor,
-        mode='min'
+        mode=monitor_mode
     )
 
     early_stopping = EarlyStopping(
         monitor=monitor,
         patience=15,
         verbose=True,
-        mode='min'
+        mode=monitor_mode
     )
 
     trainer = Trainer(
