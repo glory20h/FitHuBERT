@@ -1,4 +1,4 @@
-# Librispeech Dataset for CompressW2V2
+# Librispeech Dataset for FitHuBERT
 
 import os
 import random

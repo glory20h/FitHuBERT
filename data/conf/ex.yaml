@@ -1,6 +1,5 @@
 teacher:
-  teacher_model: '../parameters/hubert/hubert_base_ls960.pt'
-  # teacher_model: 'wav2vec_small.pt'
+  teacher_model: 'hubert_base_ls960.pt'
 
 train:
   # General setting
@@ -42,7 +41,7 @@ train:
 distiller:
   # CNN feature extractor
   extractor_mode: default
-  conv_feature_layers:
+  conv_feature_layers: "[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] * 2"
   feature_grad_mult: 0.1
   conv_bias: False
   # Replace CNN feature extractor to mel-spectrogram
@@ -75,9 +74,9 @@ distiller:
   dropout_input: 0.1
   # Output
   final_dim: 256
-  pred_head_final_dim: 768  # --> Teacher model dependency should be disoluted
+  pred_head_final_dim: 768
   pred_head_inter_dim: 0
-  # Task & Loss  --> Need to be moved to train?
+  # Task & Loss
   layerwise_proj: False
   pred_layer_id: '[3, 7, 11]'
   # Time-reduction layer (Only single)
@@ -105,8 +104,7 @@ optimizer:
 data:
   bucketing_path: './data/len_for_bucket'
   libri_root: '../db/LibriSpeech'
-  #train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
-  train_set: ['train-clean-100']
+  train_set: ['train-clean-100', 'train-clean-360', 'train-other-500']
   test_set: ['test-clean']
 
 specaug:
@@ -123,9 +121,3 @@ specaug:
   freq_mask_width_range: [0, 27]
   num_freq_mask: 2
   num_time_mask: 2
-
-## Name changed log
-#  no_projections -> delete_projections
-#  able_log_mel -> enable_log_mel
-#  type_of_tr_layer -> tr_layer_type
-#  tr_conv1d_kernel_stride: Tuple(int, int) -> tr_conv1d_kernel: int
