@@ -32,7 +32,9 @@ Refer to the [SUPERB docs](https://github.com/s3prl/s3prl/blob/master/s3prl/down
 For our checkpoints, check below links!
 
 [FitHuBERT-100h](https://drive.google.com/file/d/1eFJSrO5asnVtO3jv92Pj6bQ6dNzJXLWY/view?usp=sharing)
+
 [FitHuBERT-960h](https://drive.google.com/file/d/1Rq5QmEkXqwm0WK8axiMplN1rw-P8_ZQ6/view?usp=sharing)
+
 [FitW2V2-960h](https://drive.google.com/file/d/1xsLoWBPRfzTHco68SB3CA6Vf2uUgyGaJ/view?usp=sharing)
 
 
