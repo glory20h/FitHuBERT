@@ -23,7 +23,7 @@ After training, the model checkpoints and the corresponding configuration file w
 3. Run the following the command to use the FitHuBERT model for automatic speech recognition(ASR).
 
 ```
-python run_downstream.py -m train -n FitHuBERT-ASR -u fithubert -d asr -k <path to .ckpt file> -g <path to .yaml file>
+python run_downstream.py -m train -n FitHuBERT-ASR -u fithubert -d asr -s last_hidden_state -k <path to .ckpt file> -g <path to .yaml file>
 ```
 
 Refer to the [SUPERB docs](https://github.com/s3prl/s3prl/blob/master/s3prl/downstream/docs/superb.md) for more information on usage details and data preparation.
